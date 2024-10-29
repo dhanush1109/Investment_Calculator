@@ -168,9 +168,6 @@ if option == "SIP Calculator":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-
-
-
 elif option == "SWP Calculator":
     st.header("📉 SWP Calculator")
 
@@ -178,11 +175,11 @@ elif option == "SWP Calculator":
     if 'swp_initial_investment_input' not in st.session_state:
         st.session_state.swp_initial_investment_input = "100000.0" if "sip_future_value" not in st.session_state else f"{st.session_state['sip_future_value']:.2f}"
     if 'swp_monthly_withdrawal_input' not in st.session_state:
-        st.session_state.swp_monthly_withdrawal_input = "5000.0"
+        st.session_state.swp_monthly_withdrawal_input = "10000.0"
     if 'swp_tax_rate_input' not in st.session_state:
-        st.session_state.swp_tax_rate_input = "20.0"
+        st.session_state.swp_tax_rate_input = "12.0"
     if 'swp_withdraw_years_input' not in st.session_state:
-        st.session_state.swp_withdraw_years_input = "20"
+        st.session_state.swp_withdraw_years_input = "10"
 
     # Callback functions for input synchronization
     def update_investment_input():
