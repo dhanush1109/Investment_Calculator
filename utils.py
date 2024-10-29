@@ -3,7 +3,8 @@ from langchain_aws import ChatBedrock
 import plotly.express as px
 import plotly.graph_objects as go
 import boto3
-
+from io import BytesIO
+import io
 # Initialize the ChatBedrock client
 chat_client = ChatBedrock(
     model_id="anthropic.claude-3-sonnet-20240229-v1:0",
@@ -23,25 +24,6 @@ def ask_claude(text_prompt):
     except Exception as e:
         return f"Error: {str(e)}"
     
-# Function to calculate SIP returns
-# def calculate_sip(monthly_contribution, annual_return_rate, investment_years):
-#     months = investment_years * 12
-#     total_invested = monthly_contribution
-#     future_value = monthly_contribution
-#     investment_history = []
-#     contribution_history = []
-    
-#     for month in range(months):
-#         future_value *= (1 + annual_return_rate / 12)  # Compound the investment
-#         if month > 0:  # Skip the first month if there's no contribution yet
-#             future_value += monthly_contribution
-#             total_invested += monthly_contribution
-        
-#         # Store the history for visualization
-#         investment_history.append(future_value)
-#         contribution_history.append(total_invested)
-
-#     return future_value, total_invested, investment_history, contribution_history
 
 def calculate_sip(monthly_contribution, annual_return_rate, investment_years):
     monthly_return_rate = annual_return_rate / 12
@@ -52,29 +34,6 @@ def calculate_sip(monthly_contribution, annual_return_rate, investment_years):
     contribution_history = []  # Populate as needed
     
     return future_value, total_invested, investment_history, contribution_history
-
-def create_sip_visualizations(investment_history, contribution_history):
-    months = len(investment_history)
-    time_series = list(range(1, months + 1))
-
-    # Plot Investment Growth Over Time
-    fig_growth = go.Figure()
-    fig_growth.add_trace(go.Scatter(x=time_series, y=investment_history, mode='lines+markers', name='Investment Growth'))
-    fig_growth.update_layout(title='Investment Growth Over Time', xaxis_title='Months', yaxis_title='Value (₹)')
-
-    # Plot Total Contributions vs. Total Value
-    fig_comparison = go.Figure()
-    fig_comparison.add_trace(go.Scatter(x=time_series, y=contribution_history, mode='lines', name='Total Contributions'))
-    fig_comparison.add_trace(go.Scatter(x=time_series, y=investment_history, mode='lines', name='Total Value', line=dict(dash='dash')))
-    fig_comparison.update_layout(title='Total Contributions vs Total Value', xaxis_title='Months', yaxis_title='Amount (₹)')
-
-    # Plot Monthly Contributions vs. Value
-    fig_monthly = go.Figure()
-    fig_monthly.add_trace(go.Scatter(x=time_series, y=[investment_history[i] - contribution_history[i] for i in range(months)], mode='lines', name='Monthly Contributions'))
-    fig_monthly.add_trace(go.Scatter(x=time_series, y=investment_history, mode='lines', name='Total Value'))
-    fig_monthly.update_layout(title='Monthly Contributions vs Total Value', xaxis_title='Months', yaxis_title='Amount (₹)')
-
-    return fig_growth, fig_comparison, fig_monthly
 
 
 def calculate_break_even(monthly_investment, expected_return):
@@ -100,158 +59,188 @@ def calculate_break_even(monthly_investment, expected_return):
     remaining_months = months % 12
     return years, remaining_months
 
-# def calculate_sip(monthly_investment, annual_return, years):
-#     """
-#     Calculates the future value of a series of equal monthly investments (SIP)
-#     given an annual return rate and the number of years.
 
-#     Parameters:
-#     monthly_investment (float): The amount invested each month
-#     annual_return (float): The expected annual return rate (e.g. 0.08 for 8% annual return)
-#     years (int): The number of years to calculate the future value for
+def create_investment_growth_report(monthly_investment, annual_return_rate, investment_duration_years):
+    """
+    Create an Excel report for investment growth with a custom monthly and yearly breakdown.
 
-#     Returns:
-#     Tuple[float, float]: The future value and the total amount invested
-#     """
-#     monthly_return = (1 + annual_return) ** (1/12) - 1
-#     future_value = monthly_investment * ((1 + monthly_return) ** (years * 12) - 1) / monthly_return
-#     total_invested = monthly_investment * years * 12
-#     return future_value, total_invested
+    Parameters:
+    monthly_investment (float): Monthly investment amount.
+    annual_return_rate (float): Expected annual return rate as a percentage.
+    investment_duration_years (int): Investment duration in years.
+
+    Returns:
+    bytes: Excel file content as bytes.
+    """
+    excel_buffer = BytesIO()
+
+    # Setup monthly and yearly calculation parameters
+    total_months = investment_duration_years * 12
+    monthly_rate = (annual_return_rate / 12) / 100
+
+    # Initialize investment report data
+    investment_data = []
+    monthly_balance = 0
+    yearly_balance = 0
+    year = 1
+
+    # Calculate monthly and yearly balances
+    for month in range(1, total_months + 1):
+        monthly_balance += monthly_investment
+        monthly_balance *= (1 + monthly_rate)
+
+        # Accumulate yearly balance at the end of each year
+        if month % 12 == 0:
+            yearly_balance = monthly_balance
+            year += 1
+
+        # Append data for each month
+        investment_data.append({
+            'Month': month,
+            'Monthly Balance': round(monthly_balance, 2),
+            'Year': year if month % 12 != 0 else year - 1,
+            'Yearly Balance': round(yearly_balance, 2) if month % 12 == 0 else '',
+            'Monthly Investment': monthly_investment,
+            'Expected Annual Return': annual_return_rate,
+            'Investment Duration (Years)': investment_duration_years
+        })
+
+    # Create DataFrame for investment data
+    investment_df = pd.DataFrame(investment_data)
+
+    # Write to Excel with formatting
+    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+        investment_df.to_excel(writer, sheet_name='Investment Report', index=False)
+        
+        # Format worksheet
+        workbook = writer.book
+        worksheet = writer.sheets['Investment Report']
+        
+        # Apply formatting for readability
+        header_format = workbook.add_format({'bold': True, 'bg_color': '#f0f0f0', 'font_size': 12})
+        currency_format = workbook.add_format({'num_format': '₹#,##0.00'})
+
+        # Set column widths and apply header formatting
+        for col_num, value in enumerate(investment_df.columns):
+            worksheet.write(0, col_num, value, header_format)
+
+        # Apply currency formatting to balance columns
+        worksheet.set_column('B:B', 15, currency_format)
+        worksheet.set_column('D:D', 15, currency_format)
+
+    # Return the Excel file as bytes
+    excel_buffer.seek(0)
+    return excel_buffer.getvalue()
 
 
-def create_investment_growth_report(investment_history, contribution_history, monthly_investment, expected_return, years):
-    # Create a DataFrame with monthly balances and contributions
-    df = pd.DataFrame({
-        "Month": range(1, len(investment_history) + 1),
-        "Future Value": investment_history,
-        "Total Invested": contribution_history
-    })
+
+def create_swp_report(initial_investment, monthly_withdrawal, tax_rate, withdraw_years, total_withdrawals, after_tax_withdrawals, remaining_balance):
+    # Create a BytesIO object to store the Excel file
+    excel_buffer = BytesIO()
     
-    # Add additional columns
-    df["Monthly Investment"] = monthly_investment
-    df["Expected Annual Return (%)"] = expected_return
-    df["Investment Duration (Years)"] = years
+    # Create a Pandas Excel writer using the BytesIO buffer
+    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+        # Create summary data
+        summary_data = {
+            'Parameter': ['Initial Investment', 'Monthly Withdrawal', 'Tax Rate', 'Withdrawal Duration',
+                         'Total Withdrawals (Pre-tax)', 'Total Withdrawals (After-tax)', 'Remaining Balance'],
+            'Value': [f'₹{initial_investment:,.2f}', f'₹{monthly_withdrawal:,.2f}', 
+                     f'{tax_rate}%', f'{withdraw_years} years',
+                     f'₹{total_withdrawals:,.2f}', f'₹{after_tax_withdrawals:,.2f}',
+                     f'₹{remaining_balance:,.2f}']
+        }
+        
+        # Write summary sheet
+        pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
+        
+        # Get the xlsxwriter workbook and worksheet objects
+        workbook = writer.book
+        worksheet = writer.sheets['Summary']
+        
+        # Add formatting
+        header_format = workbook.add_format({
+            'bold': True,
+            'font_size': 12,
+            'bg_color': '#f0f0f0'
+        })
+        
+        # Apply formatting to the header row
+        for col_num, value in enumerate(summary_data.keys()):
+            worksheet.write(0, col_num, value, header_format)
     
-    # Save the DataFrame to an Excel file
-    file_name = f"investment_growth_report_{monthly_investment}_{expected_return}_{years}.xlsx"
-    df.to_excel(file_name, index=False)
+    # Reset the buffer position to the start
+    excel_buffer.seek(0)
     
-    return file_name
-
+    return excel_buffer.getvalue()
 
 def calculate_swp(initial_investment, monthly_withdrawal, tax_rate, withdraw_years):
     months = withdraw_years * 12
     monthly_balances = []
-    total_withdrawal_history = []
+    total_withdrawal_history = []  # This will store pre-tax withdrawal amounts
+    after_tax_withdrawal_history = []  # This will store after-tax withdrawal amounts
     current_balance = initial_investment
-
+    
     for month in range(months):
-        # Calculate the monthly withdrawal (post-tax)
+        # Calculate the tax on the monthly withdrawal
         tax = (monthly_withdrawal * tax_rate) / 100
-        after_tax_withdrawal = monthly_withdrawal + tax
-        current_balance -= after_tax_withdrawal
+        after_tax_withdrawal = monthly_withdrawal - tax  # Subtract tax instead of adding
         
-        # Compound the remaining balance
-        current_balance *= (1 + 0.01)  # Assuming a 1% monthly growth for illustration
+        # Deduct the pre-tax withdrawal from the current balance
+        current_balance -= monthly_withdrawal
+        
+        # Compound the remaining balance (1% monthly growth)
+        current_balance *= (1 + 0.01)
         
         # Store the results
         monthly_balances.append(current_balance)
-        total_withdrawal_history.append(after_tax_withdrawal)
+        total_withdrawal_history.append(monthly_withdrawal)  # Store pre-tax withdrawal
+        after_tax_withdrawal_history.append(after_tax_withdrawal)  # Store after-tax withdrawal
     
-    total_withdrawals = sum(total_withdrawal_history)
-    after_tax_withdrawals = total_withdrawals - (total_withdrawals * (tax_rate / 100))
+    total_withdrawals = sum(total_withdrawal_history)  # Total pre-tax withdrawals
+    after_tax_withdrawals = sum(after_tax_withdrawal_history)  # Total after-tax withdrawals
     remaining_balance = current_balance
-
-    return total_withdrawals, after_tax_withdrawals, remaining_balance, monthly_balances, total_withdrawal_history
-
-# Function to create SWP visualizations
-def create_swp_visualizations(monthly_balances, total_withdrawal_history, initial_investment):
-    months = len(monthly_balances)
-    time_series = list(range(1, months + 1))
-
-    # Plot Remaining Balance Over Time
-    fig_balance = go.Figure()
-    fig_balance.add_trace(go.Scatter(x=time_series, y=monthly_balances, mode='lines+markers', name='Remaining Balance'))
-    fig_balance.update_layout(title='Remaining Balance Over Time', xaxis_title='Months', yaxis_title='Balance (₹)')
     
-    # Plot Total Withdrawals Over Time
-    fig_withdrawals = go.Figure()
-    fig_withdrawals.add_trace(go.Scatter(x=time_series, y=total_withdrawal_history, mode='lines+markers', name='Total Withdrawals'))
-    fig_withdrawals.update_layout(title='Total Withdrawals Over Time', xaxis_title='Months', yaxis_title='Withdrawals (₹)')
-    
-    # Plot Initial Investment vs Remaining Balance
-    fig_comparison = go.Figure()
-    fig_comparison.add_trace(go.Scatter(x=time_series, y=[initial_investment] * months, mode='lines', name='Initial Investment', line=dict(dash='dash')))
-    fig_comparison.add_trace(go.Scatter(x=time_series, y=monthly_balances, mode='lines', name='Remaining Balance'))
-    fig_comparison.update_layout(title='Initial Investment vs Remaining Balance', xaxis_title='Months', yaxis_title='Amount (₹)')
+    return total_withdrawals, after_tax_withdrawals, remaining_balance, monthly_balances, after_tax_withdrawal_history
 
-    return fig_balance, fig_withdrawals, fig_comparison
-
-def create_swp_report(initial_investment, monthly_withdrawal, tax_rate, withdraw_years, total_withdrawals, after_tax_withdrawals, remaining_balance):
-    # Create a DataFrame for the report
-    df = pd.DataFrame({
-        "Total Withdrawals (before tax)": [total_withdrawals],
-        "Total Withdrawals (after tax)": [after_tax_withdrawals],
-        "Remaining Balance": [remaining_balance],
-    })
-
-    # Define the file name
-    file_name = f"swp_report_{initial_investment}_{monthly_withdrawal}_{tax_rate}_{withdraw_years}.xlsx"
-    
-    # Save the DataFrame to an Excel file
-    df.to_excel(file_name, index=False)
-    
-    return file_name
-
-
-def create_withdrawal_report(initial_investment, monthly_withdrawal, tax_rate, withdrawal_years):
-    months = withdrawal_years * 12
-    balance = initial_investment
-    total_withdrawals = 0
-    after_tax_withdrawals = 0
-
-    # Monthly rate of return
-    annual_rate_of_return = 0.12  # You can modify this as needed
-    monthly_rate_of_return = annual_rate_of_return / 12
-
-    # Create a list to hold the report data
-    report_data = []
-
-    for month in range(months):
-        # Apply monthly compounding
-        balance *= (1 + monthly_rate_of_return)
-
-        # Determine the withdrawal amount and remaining balance
-        if balance >= monthly_withdrawal:
-            current_withdrawal = monthly_withdrawal
-            balance -= monthly_withdrawal
-        else:
-            current_withdrawal = balance
-            balance = 0  # Set balance to zero after withdrawal
-
-        # Calculate tax and after-tax withdrawal
-        tax = (current_withdrawal * tax_rate) / 100
-        after_tax_withdrawal = current_withdrawal - tax
-
-        # Update total withdrawals and after-tax withdrawals
-        total_withdrawals += current_withdrawal
-        after_tax_withdrawals += after_tax_withdrawal
-
-        # Store the data for the report
-        report_data.append({
-            "Month": month + 1,
-            "Withdrawal Amount": current_withdrawal,
-            "Tax Paid": tax,
-            "After-tax Withdrawal": after_tax_withdrawal,
-            "Remaining Balance": balance
-        })
-
-    # Create a DataFrame for the report
-    report_df = pd.DataFrame(report_data)
-
-    # Save the report to an Excel file
-    file_name = f"swp_report_{initial_investment}_{monthly_withdrawal}_{tax_rate}_{withdrawal_years}.xlsx"
-    report_df.to_excel(file_name, index=False)
-
-    return file_name, report_df
-
+def convert_df_to_excel(df):
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                # Write DataFrame to Excel
+                df.to_excel(writer, sheet_name='Monthly Details', index=False)
+                
+                # Get workbook and worksheet objects
+                workbook = writer.book
+                worksheet = writer.sheets['Monthly Details']
+                
+                # Add formatting
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'bg_color': '#D3D3D3',
+                    'border': 1,
+                    'text_wrap': True,
+                    'valign': 'vcenter',
+                    'align': 'center'
+                })
+                
+                currency_format = workbook.add_format({
+                    'num_format': '₹#,##0.00',
+                    'border': 1
+                })
+                
+                # Apply header format
+                for col_num, value in enumerate(df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Set column widths
+                worksheet.set_column('A:A', 10)  # Month column
+                worksheet.set_column('B:E', 20)  # Other columns
+                
+                # Apply currency format to relevant columns
+                for row in range(1, len(df) + 1):
+                    worksheet.write_number(row, 1, df.iloc[row-1]['Withdrawal (before tax)'], currency_format)
+                    worksheet.write_number(row, 2, df.iloc[row-1]['Withdrawal (after tax)'], currency_format)
+                    worksheet.write_number(row, 3, df.iloc[row-1]['Tax Paid'], currency_format)
+                    worksheet.write_number(row, 4, df.iloc[row-1]['Remaining Balance'], currency_format)
+            
+            buffer.seek(0)
+            return buffer
