@@ -3,3 +3,4 @@ langchain-aws
 plotly
 boto3
 streamlit
+xlsxwriter
