@@ -12,18 +12,18 @@ import io
 #     model_kwargs={"temperature": 0.0}
 # )
 
-# def ask_claude(text_prompt):
-#     try:
-#         # Call the invoke method with the input
-#         response = chat_client.invoke(input=text_prompt)
+def ask_claude(text_prompt):
+    try:
+        # Call the invoke method with the input
+        response = chat_client.invoke(input=text_prompt)
         
-#         # Extract the response content
-#         if "content" in response:
-#             return response["content"]
-#         else:
-#             return "Error: No response content from the model."
-#     except Exception as e:
-#         return f"Error: {str(e)}"
+        # Extract the response content
+        if "content" in response:
+            return response["content"]
+        else:
+            return "Error: No response content from the model."
+    except Exception as e:
+        return f"Error: {str(e)}"
     
 
 def calculate_sip(monthly_contribution, annual_return_rate, investment_years):
