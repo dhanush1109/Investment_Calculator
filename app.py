@@ -355,19 +355,19 @@ elif option == "SWP Calculator":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# Chatbot Section
-elif option == "Chatbot":
-    st.header("💬 Chatbot Assistant")
-    st.write("Ask me any investment-related question!")
+# # Chatbot Section
+# elif option == "Chatbot":
+#     st.header("💬 Chatbot Assistant")
+#     st.write("Ask me any investment-related question!")
 
-    user_query = st.text_input("Your question:", key="chatbot_query")
+#     user_query = st.text_input("Your question:", key="chatbot_query")
 
-    if st.button("Ask", key="ask_chatbot"):
-        if user_query:
-            with st.spinner("Getting response..."):
-                # Call the ask_claude function with the user's question
-                bot_response = ask_claude(user_query)
-                st.write("Chatbot:", bot_response)
-                st.session_state["chatbot_response"] = bot_response
-        else:
-            st.write("Please enter a question.")
+#     if st.button("Ask", key="ask_chatbot"):
+#         if user_query:
+#             with st.spinner("Getting response..."):
+#                 # Call the ask_claude function with the user's question
+#                 bot_response = ask_claude(user_query)
+#                 st.write("Chatbot:", bot_response)
+#                 st.session_state["chatbot_response"] = bot_response
+#         else:
+#             st.write("Please enter a question.")
