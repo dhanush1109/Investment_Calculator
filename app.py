@@ -23,7 +23,7 @@ with open("styles.css") as f:
 st.title("💰 Investment Calculator")
 
 # Sidebar navigation
-option = st.sidebar.selectbox("Select Calculator", ["SIP Calculator", "SWP Calculator", "Chatbot"], key="selected_option")
+option = st.sidebar.selectbox("Select Calculator", ["SIP Calculator", "SWP Calculator"], key="selected_option")
 
 if option == "SIP Calculator":
     st.header("📈 SIP Calculator")
