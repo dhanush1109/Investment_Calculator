@@ -159,7 +159,7 @@ if option == "SIP Calculator":
     cumulative_investment = 0
     cumulative_value = 0
     breakeven_month = None
-    has_breakeven_occurred = False
+    has_broken_even = False  # Flag to track if investment has broken even
     
     for month in range(1, months + 1):
         cumulative_investment += st.session_state.monthly_contribution
@@ -171,19 +171,10 @@ if option == "SIP Calculator":
         
         returns = cumulative_value - cumulative_investment
         
-        # Improved breakeven detection
-        if not has_breakeven_occurred and returns > 0:
-            # Linear interpolation to find more precise breakeven point
-            if month > 1:
-                prev_returns = monthly_data[-1]['Returns']
-                if prev_returns < 0 and returns > 0:
-                    # Calculate fraction of month where breakeven occurred
-                    fraction = abs(prev_returns) / (returns - prev_returns)
-                    breakeven_month = month - 1 + fraction
-                    has_breakeven_occurred = True
-            else:
-                breakeven_month = month
-                has_breakeven_occurred = True
+        # Track breakeven point (when returns first become positive)
+        if not has_broken_even and returns > 0:
+            breakeven_month = month
+            has_broken_even = True
             
         monthly_data.append({
             'Month': month,
@@ -197,115 +188,165 @@ if option == "SIP Calculator":
     # Create DataFrame with monthly details
     sip_data = pd.DataFrame(monthly_data)
     
-    # Enhanced styling function for the DataFrame
-    def highlight_years_and_breakeven(x):
-        df_styled = pd.DataFrame('', index=x.index, columns=x.columns)
+    # Display breakeven information only if it exists
+    if breakeven_month:
+        breakeven_year = (breakeven_month - 1) // 12 + 1
+        breakeven_month_in_year = (breakeven_month - 1) % 12 + 1
         
-        # Highlight year changes
-        df_styled.loc[x['Month'] % 12 == 1, :] = 'background-color: #50C878'
-        
-        # Highlight breakeven point if it exists and hasn't occurred yet
-        if breakeven_month and not has_breakeven_occurred:
-            # Find the closest month to highlight
-            closest_month = int(np.ceil(breakeven_month))
-            df_styled.loc[closest_month-1, :] = 'background-color: #FFD700'
-            
-        return df_styled
+        # Create an info box for initial breakeven point
+        st.info(f"""
+        🎯 Initial Breakeven Point:
+        - Investment broke even in Month {breakeven_month} (Year {breakeven_year}, Month {breakeven_month_in_year})
+        - Investment at breakeven: ₹{sip_data['Invested Amount'].iloc[breakeven_month-1]:,.2f}
+        - Value at breakeven: ₹{sip_data['Current Value'].iloc[breakeven_month-1]:,.2f}
+        - Returns at breakeven: ₹{sip_data['Returns'].iloc[breakeven_month-1]:,.2f}
+        """)
 
-    # Apply styling to DataFrame
-    styled_sip_data = sip_data.style.format({
-        'Invested Amount': '₹{:,.2f}',
-        'Current Value': '₹{:,.2f}',
-        'Returns': '₹{:,.2f}',
-        'Returns %': '{:,.2f}%'
-    }).apply(highlight_years_and_breakeven, axis=None)
-    
-    # Display breakeven information only if it hasn't occurred yet
-    if breakeven_month and not has_breakeven_occurred:
-        breakeven_year = (int(breakeven_month) - 1) // 12 + 1
-        breakeven_month_in_year = int(breakeven_month - 1) % 12 + 1
+    # Fixed styling function
+    def highlight_years_and_breakeven(df):
+        def style_row(row):
+            if breakeven_month and row.name == breakeven_month - 1:
+                return ['background-color: #FFD700; font-weight: bold'] * len(row)
+            elif (row['Month'] % 12) == 1:
+                return ['background-color: #90EE90'] * len(row)
+            return [''] * len(row)
         
-        # Create columns for breakeven metrics
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.success(f"📈 Breakeven Point: Month {breakeven_month:.1f} (Year {breakeven_year}, Month {breakeven_month_in_year})")
-        
-        # Find the closest month for displaying breakeven values
-        closest_month_index = int(np.ceil(breakeven_month)) - 1
-        
-        with col2:
-            st.metric(
-                "Investment at Breakeven",
-                f"₹{sip_data['Invested Amount'].iloc[closest_month_index]:,.2f}"
-            )
-        
-        with col3:
-            st.metric(
-                "Value at Breakeven",
-                f"₹{sip_data['Current Value'].iloc[closest_month_index]:,.2f}"
-            )
+        return pd.DataFrame(df.apply(style_row, axis=1).tolist(), 
+                          index=df.index, 
+                          columns=df.columns)
+
+    # Format and style the DataFrame
+    styled_sip_data = sip_data.style\
+        .format({
+            'Invested Amount': '₹{:,.2f}',
+            'Current Value': '₹{:,.2f}',
+            'Returns': '₹{:,.2f}',
+            'Returns %': '{:,.2f}%'
+        })\
+        .apply(highlight_years_and_breakeven, axis=None)
     
     # Display the styled DataFrame
-    st.dataframe(styled_sip_data)
+    st.dataframe(
+        styled_sip_data,
+        height=400,
+        use_container_width=True
+    )
+
+    # Add summary metrics in columns with improved breakeven display
+    col1, col2, col3 = st.columns(3)
     
-    # Add summary statistics
-    col1, col2 = st.columns(2)
     with col1:
         st.metric(
             "Average Monthly Return", 
             f"₹{(sip_data['Returns'].iloc[-1] / months):,.2f}"
         )
+    
     with col2:
         st.metric(
             "Current Monthly Return", 
             f"₹{sip_data['Returns'].diff().iloc[-1]:,.2f}"
         )
+        
+    with col3:
+        if has_broken_even:
+            current_returns = sip_data['Returns'].iloc[-1]
+            st.metric(
+                "Current Total Returns",
+                f"₹{current_returns:,.2f}",
+                delta=f"{(current_returns / sip_data['Invested Amount'].iloc[-1] * 100):.1f}%"
+            )
+        else:
+            months_to_breakeven = "Not yet reached"
+            st.metric(
+                "Months to Breakeven",
+                months_to_breakeven
+            )
 
-    # Update the Excel conversion function to handle the new breakeven logic
-    def convert_df_to_excel(df, breakeven_month, has_breakeven_occurred):
+    # Update Excel export function to handle breakeven correctly
+    def convert_df_to_excel(df):
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            # ... (previous Excel formatting code remains the same until summary section)
+            df.to_excel(writer, index=False, sheet_name='SIP Details')
             
-            # Update breakeven information in Excel
-            if breakeven_month and not has_breakeven_occurred:
-                breakeven_year = (int(breakeven_month) - 1) // 12 + 1
-                breakeven_month_in_year = int(breakeven_month - 1) % 12 + 1
+            workbook = writer.book
+            worksheet = writer.sheets['SIP Details']
+            
+            # Format definitions
+            header_format = workbook.add_format({
+                'bold': True,
+                'bg_color': '#F0F2F6',
+                'border': 1
+            })
+            
+            money_format = workbook.add_format({
+                'num_format': '₹#,##0.00',
+                'border': 1
+            })
+            
+            percent_format = workbook.add_format({
+                'num_format': '0.00"%"',
+                'border': 1
+            })
+            
+            year_format = workbook.add_format({
+                'bg_color': '#90EE90',
+                'border': 1
+            })
+            
+            breakeven_format = workbook.add_format({
+                'bg_color': '#FFD700',
+                'bold': True,
+                'border': 1
+            })
+            
+            # Apply formats
+            for col_num, value in enumerate(df.columns.values):
+                worksheet.write(0, col_num, value, header_format)
                 
-                worksheet.write(
-                    summary_row + 3, 0,
-                    f"Breakeven Point: Month {breakeven_month:.1f} (Year {breakeven_year}, Month {breakeven_month_in_year})"
-                )
+            # Format data rows with correct breakeven handling
+            for row_num in range(1, len(df) + 1):
+                row_data = df.iloc[row_num-1]
                 
-                closest_month_index = int(np.ceil(breakeven_month)) - 1
+                # Determine if this is a year change or breakeven row
+                is_year_change = row_data['Month'] % 12 == 1
+                is_breakeven = breakeven_month and row_num == breakeven_month
                 
-                worksheet.write(summary_row + 4, 0, "Investment at Breakeven")
-                worksheet.write(
-                    summary_row + 4, 1,
-                    df['Invested Amount'].iloc[closest_month_index],
-                    money_format
-                )
+                # Choose appropriate format
+                if is_breakeven:
+                    row_format = breakeven_format
+                elif is_year_change:
+                    row_format = year_format
+                else:
+                    row_format = money_format
                 
-                worksheet.write(summary_row + 5, 0, "Value at Breakeven")
-                worksheet.write(
-                    summary_row + 5, 1,
-                    df['Current Value'].iloc[closest_month_index],
-                    money_format
-                )
-        
-        output.seek(0)
+                # Write row data with appropriate formatting
+                for col_num, value in enumerate(row_data):
+                    if col_num in [2, 3, 4]:  # Money columns
+                        worksheet.write(row_num, col_num, value, row_format)
+                    elif col_num == 5:  # Percentage column
+                        worksheet.write(row_num, col_num, value/100, percent_format)
+                    else:
+                        worksheet.write(row_num, col_num, value, row_format)
+            
+            # Add breakeven information if applicable
+            summary_row = len(df) + 2
+            if breakeven_month:
+                worksheet.write(summary_row, 0, "Breakeven Analysis", workbook.add_format({'bold': True}))
+                worksheet.write(summary_row + 1, 0, f"Initial Breakeven Month: {breakeven_month}")
+                worksheet.write(summary_row + 1, 1, f"Year {(breakeven_month-1)//12 + 1}, Month {(breakeven_month-1)%12 + 1}")
+                worksheet.write(summary_row + 2, 0, "Returns at Breakeven")
+                worksheet.write(summary_row + 2, 1, df['Returns'].iloc[breakeven_month-1], money_format)
+            
         return output.getvalue()
 
-    # Add a download button for the SIP data
-    sip_excel_buffer = convert_df_to_excel(sip_data, breakeven_month, has_breakeven_occurred)
+    # Add download button
+    excel_data = convert_df_to_excel(sip_data)
     st.download_button(
         label="Download Detailed SIP Analysis",
-        data=sip_excel_buffer,
+        data=excel_data,
         file_name="sip_detailed_analysis.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
 
 # SWP Calculator Section
 elif option == "SWP Calculator":
