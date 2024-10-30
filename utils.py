@@ -17,7 +17,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
 # Load the FAISS index from the saved file
-vectorstore_faiss = FAISS.load_local("INVSTMT_DB", SentenceTransformerEmbeddings(), allow_dangerous_deserialization=True)
+vectorstore_faiss = FAISS.load_local("INVSTMT", SentenceTransformerEmbeddings(), allow_dangerous_deserialization=True)
 
 # Load the embedding model again if necessary
 embedding_function = SentenceTransformerEmbeddings(model_name="thenlper/gte-small")
