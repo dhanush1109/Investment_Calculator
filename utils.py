@@ -5,25 +5,63 @@ import plotly.graph_objects as go
 import boto3
 from io import BytesIO
 import io
+import os
+from langchain.vectorstores import FAISS
+from langchain.embeddings import SentenceTransformerEmbeddings
+from langchain.schema import Document
 
-# # Initialize the ChatBedrock client
-# chat_client = ChatBedrock(
-#     model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-#     model_kwargs={"temperature": 0.0}
-# )
+import os
+from langchain_community.embeddings.sentence_transformer import SentenceTransformerEmbeddings
+from langchain_community.vectorstores import FAISS
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 
-def ask_claude(text_prompt):
-    try:
-        # Call the invoke method with the input
-        response = chat_client.invoke(input=text_prompt)
-        
-        # Extract the response content
-        if "content" in response:
-            return response["content"]
-        else:
-            return "Error: No response content from the model."
-    except Exception as e:
-        return f"Error: {str(e)}"
+# Load the FAISS index from the saved file
+vectorstore_faiss = FAISS.load_local("INVSTMT_DB", SentenceTransformerEmbeddings(), allow_dangerous_deserialization=True)
+
+# Load the embedding model again if necessary
+embedding_function = SentenceTransformerEmbeddings(model_name="thenlper/gte-small")
+
+# Load the GPT-Neo model and tokenizer
+model_name = "EleutherAI/gpt-neo-2.7B"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name)
+
+def generate_structured_response(text_content, user_query):
+    prompt = f"Based on the following information: {text_content}, answer the question: {user_query}. Please provide a clear and structured response."
+    
+    # Encode the input prompt
+    inputs = tokenizer.encode(prompt, return_tensors="pt")
+
+    # Generate a response
+    with torch.no_grad():
+        outputs = model.generate(
+            inputs,
+            max_length=150,
+            num_return_sequences=1,
+            no_repeat_ngram_size=2,
+            early_stopping=True
+        )
+
+    # Decode and format the response
+    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return response.strip()
+
+def ask_bot(user_query):
+    # Fetch relevant documents based on the query
+    docs = vectorstore_faiss.similarity_search(user_query, k=3)
+
+    # Format the documents into a coherent response
+    if docs:
+        # Assuming docs contain a list of Document objects
+        text_content = " ".join([doc.page_content for doc in docs])
+
+        # Use the language model to generate a structured response
+        structured_response = generate_structured_response(text_content, user_query)
+        return structured_response
+    else:
+        return "I'm sorry, but I couldn't find relevant information."
+
     
 
 def calculate_sip(monthly_contribution, annual_return_rate, investment_years):
@@ -245,3 +283,4 @@ def convert_df_to_excel(df):
             
             buffer.seek(0)
             return buffer
+
