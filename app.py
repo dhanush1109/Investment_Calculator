@@ -560,23 +560,19 @@ elif option == "SWP Calculator":
 # Chatbot Section
 if option == "Chatbot":
     st.header("💬 Investment Chatbot")
-    st.write("Still under development") 
-    # st.write("Ask me any investment-related question!")
+    st.subheader("Your Personal Investment Assistant")
+    st.write(
+        "Explore the world of investments with our interactive chatbot! 🤖 "
+        "Whether you're a seasoned investor or just starting out, our chatbot is here to help you with:"
+    )
+    st.write("- **Personalized Advice**: Get tailored recommendations based on your financial goals.")
+    st.write("- **Market Insights**: Stay updated with the latest trends and news.")
+    st.write("- **Investment Strategies**: Learn about various strategies to maximize your returns.")
+    st.write(
+        "While we're still fine-tuning our chatbot's features, we can't wait to assist you on your investment journey! "
+        "Stay tuned for updates and exciting features coming soon!"
+    )
 
-    # user_query = st.text_area("Your question:", height=100, key="chatbot_query")
-
-    # if st.button("Ask", key="ask_chatbot"):
-    #     if user_query:
-    #         with st.spinner("Getting response..."):
-    #             bot_response = ask_bot(user_query)
-    #             st.write("Chatbot:", bot_response)
-    #             st.session_state["chatbot_response"] = bot_response
-    #     else:
-    #         st.warning("Please enter a question.")
-
-    # if "chatbot_response" in st.session_state:
-    #     with st.expander("Previous Response"):
-    #         st.write(st.session_state["chatbot_response"])
 
 
 # if option == "Chatbot":
