@@ -6,7 +6,7 @@ import boto3
 import json
 import os
 from langchain_aws import ChatBedrock
-from utils import ask_claude, calculate_sip, calculate_break_even, calculate_swp, create_investment_growth_report, create_swp_report, convert_df_to_excel
+from utils import calculate_sip, calculate_break_even, calculate_swp, create_investment_growth_report, create_swp_report, convert_df_to_excel, ask_bot
 import datetime
 from io import BytesIO
 # Set page configuration
@@ -29,13 +29,28 @@ option = st.sidebar.selectbox("Select Calculator", ["SIP Calculator", "SWP Calcu
 if option == "SIP Calculator":
     st.header("📈 SIP Calculator")
 
-    # Initialize session state variables if they don't exist
-    if 'monthly_contribution' not in st.session_state:
-        st.session_state.monthly_contribution = 1000.0
-    if 'annual_return_rate' not in st.session_state:
-        st.session_state.annual_return_rate = 12.0
-    if 'investment_years' not in st.session_state:
-        st.session_state.investment_years = 10
+    # Initialize default values
+    DEFAULT_MONTHLY_CONTRIBUTION = 1000.0
+    DEFAULT_ANNUAL_RETURN_RATE = 12.0
+    DEFAULT_INVESTMENT_YEARS = 10
+
+    # Initialize all session state variables at once
+    defaults = {
+        'monthly_contribution': DEFAULT_MONTHLY_CONTRIBUTION,
+        'annual_return_rate': DEFAULT_ANNUAL_RETURN_RATE,
+        'investment_years': DEFAULT_INVESTMENT_YEARS,
+        'sip_monthly_contribution': str(DEFAULT_MONTHLY_CONTRIBUTION),
+        'sip_annual_return_rate': str(DEFAULT_ANNUAL_RETURN_RATE),
+        'sip_investment_years': str(DEFAULT_INVESTMENT_YEARS),
+        'sip_monthly_contribution_slider': DEFAULT_MONTHLY_CONTRIBUTION,
+        'sip_annual_return_rate_slider': DEFAULT_ANNUAL_RETURN_RATE,
+        'sip_investment_years_slider': DEFAULT_INVESTMENT_YEARS
+    }
+
+    # Initialize any missing session state variables
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
     # Create callback functions for syncing inputs
     def update_contribution():
@@ -82,12 +97,11 @@ if option == "SIP Calculator":
         st.text_input(
             "Monthly Contribution Amount (₹)",
             key="sip_monthly_contribution",
-            value=str(st.session_state.monthly_contribution),
             on_change=update_contribution
         )
         st.slider(
             "Select Monthly Contribution Amount (₹)",
-            100.0, 1000000.0, st.session_state.monthly_contribution,
+            100.0, 1000000.0,
             key="sip_monthly_contribution_slider",
             on_change=update_contribution_slider
         )
@@ -97,12 +111,11 @@ if option == "SIP Calculator":
         st.text_input(
             "Expected Annual Return Rate (%)",
             key="sip_annual_return_rate",
-            value=str(st.session_state.annual_return_rate),
             on_change=update_return_rate
         )
         st.slider(
             "Select Expected Annual Return Rate (%)",
-            0.0, 50.0, st.session_state.annual_return_rate,
+            0.0, 50.0,
             key="sip_annual_return_rate_slider",
             on_change=update_return_rate_slider
         )
@@ -112,12 +125,11 @@ if option == "SIP Calculator":
         st.text_input(
             "Investment Duration (Years)",
             key="sip_investment_years",
-            value=str(st.session_state.investment_years),
             on_change=update_years
         )
         st.slider(
             "Select Investment Duration (Years)",
-            0, 50, st.session_state.investment_years,
+            0, 50,
             key="sip_investment_years_slider",
             on_change=update_years_slider
         )
@@ -132,10 +144,10 @@ if option == "SIP Calculator":
     future_value = sip_results[0]
     total_invested = sip_results[1]
 
-
     # Store future value in session state for SWP calculator
     st.session_state['sip_future_value'] = future_value
 
+    # Rest of your code remains the same...
     # Display results
     st.metric("Future Value of Investment", f"₹{future_value:,.2f}")
     st.metric("Total Amount Invested", f"₹{total_invested:,.2f}")
@@ -148,7 +160,6 @@ if option == "SIP Calculator":
     }
     pie_chart = px.pie(pie_data, values='Amount', names='Category', title='Investment Breakdown')
     st.plotly_chart(pie_chart)
-# ... (previous code remains the same until the Monthly SIP Contribution Details section)
 
     # Display monthly SIP contribution details
     st.subheader("Monthly SIP Contribution Details")
@@ -351,16 +362,28 @@ if option == "SIP Calculator":
 # SWP Calculator Section
 elif option == "SWP Calculator":
     st.header("📉 SWP Calculator")
-
-    # Initialize session state for each input if not already present
-    if 'swp_initial_investment_input' not in st.session_state:
-        st.session_state.swp_initial_investment_input = "100000.0" if "sip_future_value" not in st.session_state else f"{st.session_state['sip_future_value']:.2f}"
+    if 'swp_initial_investment' not in st.session_state:
+        st.session_state.swp_initial_investment = st.session_state.get('sip_future_value', 100000.0)
     if 'swp_monthly_withdrawal_input' not in st.session_state:
-        st.session_state.swp_monthly_withdrawal_input = "5000.0"
+        st.session_state.swp_monthly_withdrawal_input = "5000.0"  # Initialize as a string
+    if 'swp_tax_rate' not in st.session_state:
+        st.session_state.swp_tax_rate = 20.0
     if 'swp_tax_rate_input' not in st.session_state:
-        st.session_state.swp_tax_rate_input = "20.0"
+        st.session_state.swp_tax_rate_input = "20.0"  # Initialize as a string
+    if 'swp_withdraw_years' not in st.session_state:
+        st.session_state.swp_withdraw_years = 20
     if 'swp_withdraw_years_input' not in st.session_state:
-        st.session_state.swp_withdraw_years_input = "20"
+        st.session_state.swp_withdraw_years_input = "20"  # Initialize as a string
+
+
+    # Callback functions for synchronization
+    def update_investment():
+        try:
+            value = float(st.session_state.swp_initial_investment_input)
+            st.session_state.swp_initial_investment = value
+            st.session_state.swp_initial_investment_slider = value
+        except ValueError:
+            pass
 
     # Callback functions for input synchronization
     def update_investment_input():
@@ -376,10 +399,8 @@ elif option == "SWP Calculator":
         st.session_state.swp_withdraw_years_input = str(st.session_state.swp_withdraw_years_slider)
 
     def update_investment_slider():
-        try:
-            st.session_state.swp_initial_investment_slider = float(st.session_state.swp_initial_investment_input)
-        except ValueError:
-            st.session_state.swp_initial_investment_input = f"{st.session_state.swp_initial_investment_slider:.2f}"
+        st.session_state.swp_initial_investment = st.session_state.swp_initial_investment_slider
+        st.session_state.swp_initial_investment_input = str(st.session_state.swp_initial_investment_slider)
 
     def update_withdrawal_slider():
         try:
@@ -403,29 +424,30 @@ elif option == "SWP Calculator":
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        initial_investment = st.text_input(
+        st.text_input(
             "Initial Investment Amount (₹)",
-            value=st.session_state.swp_initial_investment_input,
+            value=str(st.session_state.swp_initial_investment),
             key="swp_initial_investment_input",
-            on_change=update_investment_slider
+            on_change=update_investment
         )
-        initial_investment_slider = st.slider(
+        st.slider(
             "Initial Investment Amount (₹)",
             min_value=100.0,
             max_value=1000000.0,
             step=100.0,
-            value=float(initial_investment) if initial_investment else 100000.0,
+            value=st.session_state.swp_initial_investment,
             key="swp_initial_investment_slider",
-            on_change=update_investment_input
+            on_change=update_investment_slider
         )
 
     with col2:
         monthly_withdrawal = st.text_input(
-            "Monthly Withdrawal Amount (₹)",
-            value=st.session_state.swp_monthly_withdrawal_input,
-            key="swp_monthly_withdrawal_input",
-            on_change=update_withdrawal_slider
+        "Monthly Withdrawal Amount (₹)",
+        value=str(st.session_state.swp_monthly_withdrawal_input),
+        key="swp_monthly_withdrawal_input",
+        on_change=update_withdrawal_slider
         )
+
         monthly_withdrawal_slider = st.slider(
             "Monthly Withdrawal Amount (₹)",
             min_value=100.0,
@@ -472,12 +494,14 @@ elif option == "SWP Calculator":
     # Calculate and display results
     if st.button("Calculate SWP Details", key="calculate_swp"):
         # Perform calculations
+        # Use st.session_state variables directly in calculations
         total_withdrawals, after_tax_withdrawals, remaining_balance, monthly_balances, after_tax_withdrawal_history = calculate_swp(
-            initial_investment_slider,
-            monthly_withdrawal_slider,
-            tax_rate_slider,
-            withdraw_years_slider
+            st.session_state.swp_initial_investment_slider,
+            st.session_state.swp_monthly_withdrawal_slider,
+            st.session_state.swp_tax_rate_slider,
+            st.session_state.swp_withdraw_years_slider
         )
+
 
         # Display summary metrics
         col1, col2, col3 = st.columns(3)
@@ -534,18 +558,21 @@ elif option == "SWP Calculator":
         )
 
 # Chatbot Section
-elif option == "Chatbot":
-    st.header("💬 Chatbot Assistant")
+if option == "Chatbot":
+    st.header("💬 Investment Chatbot")
     st.write("Ask me any investment-related question!")
 
-    user_query = st.text_input("Your question:", key="chatbot_query")
+    user_query = st.text_area("Your question:", height=100, key="chatbot_query")
 
     if st.button("Ask", key="ask_chatbot"):
         if user_query:
             with st.spinner("Getting response..."):
-                # Call the ask_claude function with the user's question
-                bot_response = ask_claude(user_query)
+                bot_response = ask_bot(user_query)
                 st.write("Chatbot:", bot_response)
                 st.session_state["chatbot_response"] = bot_response
         else:
-            st.write("Please enter a question.")
+            st.warning("Please enter a question.")
+
+    if "chatbot_response" in st.session_state:
+        with st.expander("Previous Response"):
+            st.write(st.session_state["chatbot_response"])
