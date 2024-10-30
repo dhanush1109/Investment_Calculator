@@ -4,3 +4,7 @@ plotly
 boto3
 streamlit
 xlsxwriter
+torch
+transformers
+langchain-community
+faiss-cpu
