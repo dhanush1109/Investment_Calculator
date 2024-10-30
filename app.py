@@ -560,19 +560,40 @@ elif option == "SWP Calculator":
 # Chatbot Section
 if option == "Chatbot":
     st.header("💬 Investment Chatbot")
-    st.write("Ask me any investment-related question!")
+    st.write("Still under development") 
+    # st.write("Ask me any investment-related question!")
 
-    user_query = st.text_area("Your question:", height=100, key="chatbot_query")
+    # user_query = st.text_area("Your question:", height=100, key="chatbot_query")
 
-    if st.button("Ask", key="ask_chatbot"):
-        if user_query:
-            with st.spinner("Getting response..."):
-                bot_response = ask_bot(user_query)
-                st.write("Chatbot:", bot_response)
-                st.session_state["chatbot_response"] = bot_response
-        else:
-            st.warning("Please enter a question.")
+    # if st.button("Ask", key="ask_chatbot"):
+    #     if user_query:
+    #         with st.spinner("Getting response..."):
+    #             bot_response = ask_bot(user_query)
+    #             st.write("Chatbot:", bot_response)
+    #             st.session_state["chatbot_response"] = bot_response
+    #     else:
+    #         st.warning("Please enter a question.")
 
-    if "chatbot_response" in st.session_state:
-        with st.expander("Previous Response"):
-            st.write(st.session_state["chatbot_response"])
+    # if "chatbot_response" in st.session_state:
+    #     with st.expander("Previous Response"):
+    #         st.write(st.session_state["chatbot_response"])
+
+
+# if option == "Chatbot":
+#     st.header("💬 Investment Chatbot")
+#     st.write("Ask me any investment-related question!")
+
+#     user_query = st.text_area("Your question:", height=100, key="chatbot_query")
+
+#     if st.button("Ask", key="ask_chatbot"):
+#         if user_query:
+#             with st.spinner("Getting response..."):
+#                 bot_response = ask_bot(user_query)
+#                 st.write("Chatbot:", bot_response)
+#                 st.session_state["chatbot_response"] = bot_response
+#         else:
+#             st.warning("Please enter a question.")
+
+#     if "chatbot_response" in st.session_state:
+#         with st.expander("Previous Response"):
+#             st.write(st.session_state["chatbot_response"])
