@@ -1,66 +1,139 @@
 import pandas as pd
-from langchain_aws import ChatBedrock
 import plotly.express as px
 import plotly.graph_objects as go
 import boto3
 from io import BytesIO
-import io
 import os
+import io
+import torch
+from langchain_aws import ChatBedrock
 from langchain.vectorstores import FAISS
 from langchain.embeddings import SentenceTransformerEmbeddings
 from langchain.schema import Document
-
-import os
 from langchain_community.embeddings.sentence_transformer import SentenceTransformerEmbeddings
 from langchain_community.vectorstores import FAISS
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
+from langchain_community.llms import HuggingFacePipeline
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, AutoModelForSeq2SeqLM
+import warnings
+
+
+# Suppress warnings
+warnings.filterwarnings('ignore', category=FutureWarning)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
 
 # Load the FAISS index from the saved file
-vectorstore_faiss = FAISS.load_local("INVSTMT", SentenceTransformerEmbeddings(), allow_dangerous_deserialization=True)
+vectorstore_faiss = FAISS.load_local("INVSTMT_DB", SentenceTransformerEmbeddings(), allow_dangerous_deserialization=True)
 
 # Load the embedding model again if necessary
 embedding_function = SentenceTransformerEmbeddings(model_name="thenlper/gte-small")
 
-# Load the GPT-Neo model and tokenizer
-model_name = "EleutherAI/gpt-neo-2.7B"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name)
-
-def generate_structured_response(text_content, user_query):
-    prompt = f"Based on the following information: {text_content}, answer the question: {user_query}. Please provide a clear and structured response."
-    
-    # Encode the input prompt
-    inputs = tokenizer.encode(prompt, return_tensors="pt")
-
-    # Generate a response
-    with torch.no_grad():
-        outputs = model.generate(
-            inputs,
-            max_length=150,
-            num_return_sequences=1,
-            no_repeat_ngram_size=2,
-            early_stopping=True
+def initialize_qa_bot():
+    try:
+        print("Loading models... This might take a minute on first run...")
+        
+        # Initialize the embedding model
+        embedding_function = SentenceTransformerEmbeddings(model_name="thenlper/gte-small")
+        
+        # Load the saved FAISS index with safe loading enabled
+        vectorstore = FAISS.load_local(
+            "INVSTMT_DB", 
+            embedding_function,
+            allow_dangerous_deserialization=True
         )
+        
+        # Initialize a smaller, efficient model for text generation
+        model_name = "facebook/bart-large-cnn"  # Can also use "google/flan-t5-small" for an even smaller model
+        
+        # Check if CUDA (GPU) is available
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Using device: {device}")
+        
+        # Load tokenizer and model
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        model.to(device)
+        
+        # Create text generation pipeline
+        pipe = pipeline(
+            "text2text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            max_length=512,
+            device=0 if device == "cuda" else -1,
+        )
+        
+        # Convert pipeline to LangChain
+        llm = HuggingFacePipeline(pipeline=pipe)
+        
+        # Create a custom prompt template
+        prompt_template = """
+        Based on the following context, answer the question. Be concise and accurate.
+        If you can't find the answer in the context, say "I don't have enough information to answer that question."
+        
+        Context: {context}
+        
+        Question: {question}
+        
+        Answer:
+        """
+        
+        PROMPT = PromptTemplate(
+            template=prompt_template,
+            input_variables=["context", "question"]
+        )
+        
+        # Create the retrieval chain
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": PROMPT}
+        )
+        
+        return qa_chain
+    
+    except Exception as e:
+        print(f"\nError initializing QA bot: {str(e)}")
+        print("\nPlease ensure:")
+        print("1. The INVSTMT_DB directory exists in the current working directory")
+        print("2. All required packages are installed:")
+        print("   pip install langchain-community langchain transformers torch sentencepiece")
+        return None
 
-    # Decode and format the response
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return response.strip()
+def get_answer(qa_chain, question: str):
+    """
+    Get answer for a question using the QA chain
+    """
+    if qa_chain is None:
+        return "QA system is not properly initialized. Please check the error messages above."
+    
+    try:
+        result = qa_chain({"query": question})
+        
+        # Extract the answer and source documents
+        answer = result['result']
+        source_docs = result['source_documents']
+        
+        # Format source information
+        sources = []
+        for doc in source_docs:
+            sources.append(f"- {doc.metadata['qa_pair']} from {doc.metadata['filename']}")
+        
+        # Combine answer with sources
+        response = f"""
+Answer: {answer}
 
-def ask_bot(user_query):
-    # Fetch relevant documents based on the query
-    docs = vectorstore_faiss.similarity_search(user_query, k=3)
-
-    # Format the documents into a coherent response
-    if docs:
-        # Assuming docs contain a list of Document objects
-        text_content = " ".join([doc.page_content for doc in docs])
-
-        # Use the language model to generate a structured response
-        structured_response = generate_structured_response(text_content, user_query)
-        return structured_response
-    else:
-        return "I'm sorry, but I couldn't find relevant information."
+Sources:
+{chr(10).join(sources)}
+"""
+        return response
+    
+    except Exception as e:
+        return f"An error occurred while processing your question: {str(e)}"
 
     
 
