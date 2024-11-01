@@ -7,5 +7,5 @@ xlsxwriter
 torch
 transformers
 langchain-community
-faiss-gpu
+faiss-cpu
 sentence-transformers
