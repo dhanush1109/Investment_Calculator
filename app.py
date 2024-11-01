@@ -6,7 +6,7 @@ import boto3
 import json
 import os
 from langchain_aws import ChatBedrock
-from utils import calculate_sip, calculate_break_even, calculate_swp, create_investment_growth_report, create_swp_report, convert_df_to_excel, ask_bot
+from utils import calculate_sip, calculate_break_even, calculate_swp, create_investment_growth_report, create_swp_report, convert_df_to_excel, initialize_qa_bot, get_answer 
 import datetime
 from io import BytesIO
 # Set page configuration
@@ -15,6 +15,10 @@ st.set_page_config(
     page_icon="💰",
     layout="wide"
 )
+
+@st.cache_resource
+def load_qa_system():
+    return initialize_qa_bot()
 
 # Import external CSS
 with open("styles.css") as f:
@@ -560,36 +564,58 @@ elif option == "SWP Calculator":
 # Chatbot Section
 if option == "Chatbot":
     st.header("💬 Investment Chatbot")
-    st.subheader("Your Personal Investment Assistant")
-    st.write(
-        "Explore the world of investments with our interactive chatbot! 🤖 "
-        "Whether you're a seasoned investor or just starting out, our chatbot is here to help you with:"
+    st.write("Ask me any investment-related question!")
+
+    # Load the QA system
+    qa_chain = load_qa_system()
+    
+    # Initialize chat history in session state if it doesn't exist
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    def clean_response(response):
+        # Remove "Answer:" prefix if it exists
+        if response.startswith("Answer:"):
+            response = response[7:].strip()
+        
+        # Split by "Sources:" and take only the answer part
+        response = response.split("Sources:")[0].strip()
+        return response
+
+    # Create the text area for user input
+    user_query = st.text_area(
+        "Your question:", 
+        height=100, 
+        key="user_input"
     )
-    st.write("- **Personalized Advice**: Get tailored recommendations based on your financial goals.")
-    st.write("- **Market Insights**: Stay updated with the latest trends and news.")
-    st.write("- **Investment Strategies**: Learn about various strategies to maximize your returns.")
-    st.write(
-        "While we're still fine-tuning our chatbot's features, we can't wait to assist you on your investment journey! "
-        "Stay tuned for updates and exciting features coming soon!"
-    )
 
+    # Handle submit button click
+    if st.button("Ask", key="ask_chatbot"):
+        if user_query.strip():
+            with st.spinner("Getting response..."):
+                try:
+                    # Get response from the QA system
+                    response = get_answer(qa_chain, user_query)
+                    
+                    # Clean the response before storing
+                    cleaned_response = clean_response(response)
+                    
+                    # Add the Q&A pair to chat history
+                    st.session_state.chat_history.append({
+                        "question": user_query,
+                        "answer": cleaned_response
+                    })
+                    
+                except Exception as e:
+                    st.error(f"An error occurred: {str(e)}")
+        else:
+            st.warning("Please enter a question.")
 
-
-# if option == "Chatbot":
-#     st.header("💬 Investment Chatbot")
-#     st.write("Ask me any investment-related question!")
-
-#     user_query = st.text_area("Your question:", height=100, key="chatbot_query")
-
-#     if st.button("Ask", key="ask_chatbot"):
-#         if user_query:
-#             with st.spinner("Getting response..."):
-#                 bot_response = ask_bot(user_query)
-#                 st.write("Chatbot:", bot_response)
-#                 st.session_state["chatbot_response"] = bot_response
-#         else:
-#             st.warning("Please enter a question.")
-
-#     if "chatbot_response" in st.session_state:
-#         with st.expander("Previous Response"):
-#             st.write(st.session_state["chatbot_response"])
+    # Display chat history
+    if st.session_state.chat_history:
+        st.subheader("Chat History")
+        for i, chat in enumerate(reversed(st.session_state.chat_history)):
+            with st.container():
+                st.markdown("---")
+                st.write("**Q:** " + chat["question"])
+                st.write("**A:** " + chat["answer"])
