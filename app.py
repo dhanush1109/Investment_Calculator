@@ -956,24 +956,24 @@ def run_chatbot_section():
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
+    # Create a container for chat history at the top
     chat_container = st.container()
 
-    if st.session_state.chat_history:
-        with chat_container:
-            st.subheader("Chat History")
-            for chat in st.session_state.chat_history:
-                st.markdown(
-                    f"""<div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
-                        <b>You:</b> {chat['question']}
-                    </div>""",
-                    unsafe_allow_html=True
-                )
-                st.markdown(
-                    f"""<div style='background-color: #e8f0fe; padding: 10px; border-radius: 5px; margin-bottom: 20px;'>
-                        <b>Bot:</b> {chat['answer']}
-                    </div>""",
-                    unsafe_allow_html=True
-                )
+    # Display chat history with new styling
+    with chat_container:
+        for chat in st.session_state.chat_history:
+            st.markdown(
+                f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-family: monospace;'>
+                    <b>You:</b> {chat['question']}
+                </div>""",
+                unsafe_allow_html=True
+            )
+            st.markdown(
+                f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace;'>
+                    <b>Bot:</b> {chat['answer']}
+                </div>""",
+                unsafe_allow_html=True
+            )
 
     user_query = st.text_input(
         "Type your message:",
@@ -988,15 +988,34 @@ def run_chatbot_section():
                     try:
                         logger.info(f"Processing user query: {user_query}")
                         
+                        # Generate response
                         bot_answer = chatbot.generate_response(user_query)
                         formatted_answer = bot_answer.replace("\n", "\n\n")
                         
+                        # Add to chat history
                         st.session_state.chat_history.append({
                             "question": user_query,
                             "answer": formatted_answer
                         })
                         
-                        logger.info("Response generated and added to chat history")
+                        # Immediately display the new message
+                        st.markdown(
+                            f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-family: monospace;'>
+                                <b>You:</b> {user_query}
+                            </div>""",
+                            unsafe_allow_html=True
+                        )
+                        st.markdown(
+                            f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace;'>
+                                <b>Bot:</b> {formatted_answer}
+                            </div>""",
+                            unsafe_allow_html=True
+                        )
+                        
+                        logger.info("Response generated and displayed")
+                        
+                        # Clear the input field after sending
+                        st.session_state.user_input = ""
                         
                     except Exception as e:
                         logger.error(f"Error during chat interaction: {str(e)}", exc_info=True)
