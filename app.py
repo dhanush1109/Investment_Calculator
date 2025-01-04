@@ -820,69 +820,53 @@ def setup_logging():
 logger = setup_logging()
 
 class LLMChatbot:
-    def __init__(self, model_name="meta-llama/Llama-3.3-70B-Instruct"):
-        """Initialize the Llama chatbot with HuggingFace authentication."""
-        try:
-            logger.info(f"Loading {model_name} model and tokenizer...")
-            
-            # Initialize tokenizer with trust_remote_code for Llama
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                use_auth_token=True
-            )
-            
-            # Initialize model with specific configuration for Llama
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                use_auth_token=True,
-                torch_dtype=torch.float16,  # Use float16 for memory efficiency
-                device_map="auto",  # Automatically handle model placement
-                load_in_8bit=True  # Use 8-bit quantization to reduce memory usage
-            )
-            
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-            self.system_prompt = """<s>[INST] You are a clear and concise financial advisor. 
-            When answering questions, follow these guidelines:
-            
-            1. Keep responses under 250 words
-            2. Use simple, clear language
-            3. Structure answers with:
-               - Brief definition
-               - Key benefits
-               - Important considerations
-            4. Focus on practical, actionable information
-            
-            Current question: {user_input} [/INST]"""
-            
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(f"Model initialized successfully on {self.device}")
-            
-        except Exception as e:
-            logger.error(f"Error initializing model: {str(e)}", exc_info=True)
-            raise
+    def __init__(self, model_name="gpt2"):
+        """Initialize the LLM chatbot with the specified model."""
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        self.system_prompt = """
+        You are a clear and concise financial advisor. Provide brief, accurate explanations about investments 
+        and finance in simple terms. Keep responses under 250 words and focus on:
+        
+        - Simple explanations of financial concepts
+        - Clear, practical investment advice
+        - Basic descriptions of SIP, SWP, and other investment tools
+        - Key benefits and considerations
+        
+        Always use plain language and avoid technical jargon unless necessary.
+        Give direct answers with clear structure:
+        1. Brief definition
+        2. Key benefits
+        3. Important considerations
+        
+        Current context: """
+        
+        if torch.cuda.is_available():
+            self.model = self.model.to('cuda')
+            self.device = 'cuda'
+        else:
+            self.device = 'cpu'
     
-    def generate_response(self, user_input, max_new_tokens=150):
-        """Generate a response using the Llama model."""
+    def generate_response(self, user_input, max_new_tokens=100):  # Reduced max tokens for conciseness
         try:
-            # Format prompt according to Llama instruction format
-            full_prompt = self.system_prompt.format(user_input=user_input)
+            # Combine system prompt with user input
+            full_prompt = f"{self.system_prompt}\nUser Question: {user_input}\nProvide a clear, concise response in simple terms:\n"
             
-            # Tokenize with Llama-specific parameters
+            # Tokenize input
             inputs = self.tokenizer(
                 full_prompt,
                 padding=True,
                 truncation=True,
                 return_tensors="pt",
-                max_length=512,  # Limit input length
                 add_special_tokens=True,
                 return_attention_mask=True
             ).to(self.device)
             
-            # Generate response with Llama-optimized parameters
+            # Generate response with stricter parameters
             outputs = self.model.generate(
                 input_ids=inputs.input_ids,
                 attention_mask=inputs.attention_mask,
@@ -890,63 +874,61 @@ class LLMChatbot:
                 num_return_sequences=1,
                 pad_token_id=self.tokenizer.pad_token_id,
                 do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                top_k=40,
-                repetition_penalty=1.1,
+                temperature=0.5,  # Reduced temperature for more focused responses
+                top_p=0.85,
                 no_repeat_ngram_size=3,
-                early_stopping=True
+                length_penalty=1.2
             )
             
-            # Decode and clean response
             response = self.tokenizer.decode(
                 outputs[0][inputs.input_ids.shape[1]:],
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=True
             )
             
-            # Clean up response
+            # Additional response cleaning
             response = self._clean_response(response)
             
             return response.strip()
             
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}", exc_info=True)
-            return "I apologize, but I encountered an error. Please try asking your question again."
+            return f"I apologize, but I encountered an error. Please try asking your question again."
     
     def _clean_response(self, response):
-        """Clean and format the response."""
-        # Remove Llama instruction tokens and format markers
-        response = re.sub(r'\[/INST\]|\[INST\]', '', response)
-        response = re.sub(r'<s>|</s>', '', response)
-        
+        """Clean and format the response for better readability."""
         # Remove multiple newlines and spaces
         response = re.sub(r'\n\s*\n', '\n\n', response)
-        
+        # Remove any system prompt leakage
+        response = re.sub(r'Current context:.*?Response:', '', response, flags=re.DOTALL)
         # Ensure response doesn't exceed 250 words
         words = response.split()
         if len(words) > 250:
             response = ' '.join(words[:250]) + '...'
+        return response
+    
+    def _is_finance_related(self, response):
+        """Check if the response is related to finance and investments."""
+        finance_keywords = [
+            'invest', 'finance', 'money', 'market', 'stock', 'bond', 'sip', 'swp',
+            'portfolio', 'return', 'risk', 'fund', 'equity', 'debt', 'asset',
+            'dividend', 'interest', 'capital', 'wealth', 'financial'
+        ]
         
-        return response.strip()
+        response_lower = response.lower()
+        return any(keyword in response_lower for keyword in finance_keywords)
 
-# Initialize logging function
-def setup_logging():
-    # [Previous logging setup code remains the same]
-    pass
-
-# Initialize chatbot function
+# The rest of the code (initialize_chatbot and run_chatbot_section) remains the same
 def initialize_chatbot():
-    """Initialize the chatbot with Llama model."""
-    logger.info("Starting Llama chatbot initialization...")
+    """Initialize the chatbot with detailed logging."""
+    logger.info("Starting chatbot initialization...")
     try:
-        # Clear GPU memory before initialization
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gc.collect()
             logger.info("GPU memory cleared")
             
-            # Log GPU information
+            torch.cuda.set_device(0)
             gpu_name = torch.cuda.get_device_name(0)
             total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             logger.info(f"Using GPU: {gpu_name}")
@@ -955,7 +937,7 @@ def initialize_chatbot():
             st.success(f"Using GPU: {gpu_name}")
             st.info(f"Total GPU Memory: {total_memory:.2f} GB")
         
-        logger.info("Creating Llama Chatbot instance...")
+        logger.info("Creating LLM Chatbot instance...")
         chatbot = LLMChatbot()
         logger.info("Chatbot initialization successful")
         return chatbot
@@ -964,3 +946,89 @@ def initialize_chatbot():
         logger.error("Failed to initialize chatbot", exc_info=True)
         st.error(f"Error initializing chatbot: {str(e)}")
         return None
+
+def run_chatbot_section():
+    st.header("💬 Investment & Finance Chatbot")
+    st.write("Ask me about investments, SIP, SWP, and financial planning!")
+
+    if os.path.exists('logs'):
+        log_files = [f for f in os.listdir('logs') if f.endswith('.log')]
+        if log_files:
+            latest_log = max(log_files, key=lambda x: os.path.getctime(os.path.join('logs', x)))
+            st.info(f"Debug logs are being written to: logs/{latest_log}")
+
+    @st.cache_resource
+    def get_chatbot():
+        return initialize_chatbot()
+
+    chatbot = get_chatbot()
+
+    # Initialize chat history if not exists
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # Initialize message keys if not exists
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Display chat history
+    chat_container = st.container()
+    with chat_container:
+        for message in st.session_state.chat_history:
+            st.markdown(
+                f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-family: monospace;'>
+                    <b>You:</b> {message['question']}
+                </div>""",
+                unsafe_allow_html=True
+            )
+            st.markdown(
+                f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace;'>
+                    <b>Bot:</b> {message['answer']}
+                </div>""",
+                unsafe_allow_html=True
+            )
+
+    # Get user input
+    if prompt := st.chat_input("Ask about investments, SIP, SWP, or financial planning..."):
+        if chatbot:
+            try:
+                logger.info(f"Processing user query: {prompt}")
+                
+                # Add user message to chat history
+                st.markdown(
+                    f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-family: monospace;'>
+                        <b>You:</b> {prompt}
+                    </div>""",
+                    unsafe_allow_html=True
+                )
+
+                # Generate response with spinner
+                with st.spinner("Thinking..."):
+                    response = chatbot.generate_response(prompt)
+                    formatted_response = response.replace("\n", "\n\n")
+
+                # Display bot response
+                st.markdown(
+                    f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace;'>
+                        <b>Bot:</b> {formatted_response}
+                    </div>""",
+                    unsafe_allow_html=True
+                )
+
+                # Update chat history
+                st.session_state.chat_history.append({
+                    "question": prompt,
+                    "answer": formatted_response
+                })
+
+                logger.info("Response generated and chat history updated")
+
+            except Exception as e:
+                logger.error(f"Error during chat interaction: {str(e)}", exc_info=True)
+                st.error(f"An error occurred: {str(e)}")
+        else:
+            logger.error("Chatbot is not initialized")
+            st.error("Chatbot initialization failed. Check logs for details.")
+
+if __name__ == "__main__":
+    run_chatbot_section()
