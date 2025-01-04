@@ -792,18 +792,8 @@ class MultiBackendLlama:
             torch.cuda.empty_cache()
         gc.collect()
 
-import os
-import sys
-import logging
-from datetime import datetime
-import torch
-import gc
-import streamlit as st
-from transformers import AutoTokenizer, AutoModelForCausalLM
-
-# Setup logging function
+# Setup logging function remains the same
 def setup_logging():
-    """Set up logging configuration for the application."""
     if not os.path.exists('logs'):
         os.makedirs('logs')
 
@@ -835,7 +825,10 @@ class LLMChatbot:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(model_name)
         
-        # Define the system prompt for investment focus
+        # Set padding token
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        
         self.system_prompt = """
         You are an expert financial advisor specialized in investments, finance, Systematic Investment Plans (SIP), 
         and Systematic Withdrawal Plans (SWP). You provide accurate, professional advice only about:
@@ -857,21 +850,29 @@ class LLMChatbot:
         else:
             self.device = 'cpu'
     
-    def generate_response(self, user_input, max_length=200):
+    def generate_response(self, user_input, max_new_tokens=200):
         """Generate a response using the LLM model with the investment-focused prompt."""
         try:
             # Combine system prompt with user input
             full_prompt = f"{self.system_prompt}\nUser Question: {user_input}\nResponse:"
             
-            # Prepare the input
-            inputs = self.tokenizer.encode(full_prompt, return_tensors='pt').to(self.device)
+            # Tokenize with proper padding and attention mask
+            inputs = self.tokenizer(
+                full_prompt,
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                add_special_tokens=True,
+                return_attention_mask=True
+            ).to(self.device)
             
-            # Generate response with more focused parameters
+            # Generate response with max_new_tokens instead of max_length
             outputs = self.model.generate(
-                inputs,
-                max_length=max_length,
+                input_ids=inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                max_new_tokens=max_new_tokens,  # Use max_new_tokens instead of max_length
                 num_return_sequences=1,
-                pad_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=self.tokenizer.pad_token_id,
                 do_sample=True,
                 temperature=0.7,
                 top_p=0.9,
@@ -880,16 +881,17 @@ class LLMChatbot:
             )
             
             # Decode and clean the response
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Remove the prompt from the response
-            response = response[len(full_prompt):].strip()
+            response = self.tokenizer.decode(
+                outputs[0][inputs.input_ids.shape[1]:],  # Only decode the new tokens
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True
+            )
             
             # If the response is not finance-related, return a redirect message
             if not self._is_finance_related(response):
                 return "I apologize, but I can only provide information about investments, finance, SIP, and SWP. Please ask a question related to these topics."
             
-            return response
+            return response.strip()
             
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}", exc_info=True)
@@ -906,11 +908,11 @@ class LLMChatbot:
         response_lower = response.lower()
         return any(keyword in response_lower for keyword in finance_keywords)
 
+# The rest of the code (initialize_chatbot and run_chatbot_section) remains the same
 def initialize_chatbot():
     """Initialize the chatbot with detailed logging."""
     logger.info("Starting chatbot initialization...")
     try:
-        # Clear GPU memory
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gc.collect()
@@ -925,7 +927,6 @@ def initialize_chatbot():
             st.success(f"Using GPU: {gpu_name}")
             st.info(f"Total GPU Memory: {total_memory:.2f} GB")
         
-        # Initialize the LLM chatbot
         logger.info("Creating LLM Chatbot instance...")
         chatbot = LLMChatbot()
         logger.info("Chatbot initialization successful")
@@ -940,28 +941,23 @@ def run_chatbot_section():
     st.header("💬 Investment & Finance Chatbot")
     st.write("Ask me about investments, SIP, SWP, and financial planning!")
 
-    # Show log file location
     if os.path.exists('logs'):
         log_files = [f for f in os.listdir('logs') if f.endswith('.log')]
         if log_files:
             latest_log = max(log_files, key=lambda x: os.path.getctime(os.path.join('logs', x)))
             st.info(f"Debug logs are being written to: logs/{latest_log}")
 
-    # Initialize the chatbot
     @st.cache_resource
     def get_chatbot():
         return initialize_chatbot()
 
     chatbot = get_chatbot()
 
-    # Initialize chat history
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    # Chat container
     chat_container = st.container()
 
-    # Display chat history
     if st.session_state.chat_history:
         with chat_container:
             st.subheader("Chat History")
@@ -979,14 +975,12 @@ def run_chatbot_section():
                     unsafe_allow_html=True
                 )
 
-    # Text input
     user_query = st.text_input(
         "Type your message:",
         key="user_input",
         placeholder="Ask about investments, SIP, SWP, or financial planning..."
     )
 
-    # Submit button
     if st.button("Send", key="send_chatbot", type="primary"):
         if user_query.strip():
             if chatbot:
@@ -994,7 +988,6 @@ def run_chatbot_section():
                     try:
                         logger.info(f"Processing user query: {user_query}")
                         
-                        # Generate response using the LLM
                         bot_answer = chatbot.generate_response(user_query)
                         formatted_answer = bot_answer.replace("\n", "\n\n")
                         
