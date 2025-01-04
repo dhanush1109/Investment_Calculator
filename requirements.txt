@@ -6,6 +6,7 @@ streamlit
 xlsxwriter
 torch
 transformers
+typing
 langchain-community
 faiss-cpu
 sentence-transformers
