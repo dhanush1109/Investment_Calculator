@@ -23,6 +23,16 @@ import logging
 import sys
 import os
 import logging
+import os
+import gc
+import sys
+import logging
+import torch
+from datetime import datetime
+from typing import Dict, Optional
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from dataclasses import dataclass
+from enum import Enum
 
 login(token="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")
 
@@ -579,16 +589,6 @@ elif option == "SWP Calculator":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-import os
-import gc
-import sys
-import logging
-import torch
-from datetime import datetime
-from typing import Dict, Optional
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from dataclasses import dataclass
-from enum import Enum
 
 class BackendType(Enum):
     CUDA = "cuda"
@@ -612,36 +612,36 @@ class MultiBackendLlama:
         self._initialize_model()
 
     def setup_logging():
-    """Set up logging configuration for the application"""
-    # Create logs directory if it doesn't exist
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
-    
-    # Create a unique log filename with timestamp
-    log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-    
-    # Configure logging
-    logger = logging.getLogger('ChatbotLogger')
-    logger.setLevel(logging.DEBUG)
-    
-    # File handler
-    file_handler = logging.FileHandler(log_filename)
-    file_handler.setLevel(logging.DEBUG)
-    
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    
-    # Create formatter
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # Add handlers to logger
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
-    
-    return logger
+        """Set up logging configuration for the application"""
+        # Create logs directory if it doesn't exist
+        if not os.path.exists('logs'):
+            os.makedirs('logs')
+        
+        # Create a unique log filename with timestamp
+        log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        
+        # Configure logging
+        logger = logging.getLogger('ChatbotLogger')
+        logger.setLevel(logging.DEBUG)
+        
+        # File handler
+        file_handler = logging.FileHandler(log_filename)
+        file_handler.setLevel(logging.DEBUG)
+        
+        # Console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        
+        # Create formatter
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        # Add handlers to logger
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+        
+        return logger
 
     def _detect_backend(self) -> BackendConfig:
         """Detect and configure the best available backend"""
