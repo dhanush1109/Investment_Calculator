@@ -835,39 +835,76 @@ class LLMChatbot:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(model_name)
         
+        # Define the system prompt for investment focus
+        self.system_prompt = """
+        You are an expert financial advisor specialized in investments, finance, Systematic Investment Plans (SIP), 
+        and Systematic Withdrawal Plans (SWP). You provide accurate, professional advice only about:
+        - Investment strategies and financial planning
+        - SIP and SWP implementation and management
+        - Financial market analysis
+        - Investment risk assessment and portfolio management
+        - Basic and advanced financial concepts
+        
+        If asked about topics outside of investments and finance, politely redirect the conversation 
+        to financial topics. Always provide factual, well-researched information and include relevant 
+        disclaimers when giving financial advice.
+        
+        Current context: """
+        
         if torch.cuda.is_available():
             self.model = self.model.to('cuda')
             self.device = 'cuda'
         else:
             self.device = 'cpu'
     
-    def generate_response(self, user_input, max_length=100):
-        """Generate a response using the LLM model."""
+    def generate_response(self, user_input, max_length=200):
+        """Generate a response using the LLM model with the investment-focused prompt."""
         try:
-            # Prepare the input
-            inputs = self.tokenizer.encode(user_input, return_tensors='pt').to(self.device)
+            # Combine system prompt with user input
+            full_prompt = f"{self.system_prompt}\nUser Question: {user_input}\nResponse:"
             
-            # Generate response
+            # Prepare the input
+            inputs = self.tokenizer.encode(full_prompt, return_tensors='pt').to(self.device)
+            
+            # Generate response with more focused parameters
             outputs = self.model.generate(
                 inputs,
                 max_length=max_length,
                 num_return_sequences=1,
                 pad_token_id=self.tokenizer.eos_token_id,
                 do_sample=True,
-                temperature=0.7
+                temperature=0.7,
+                top_p=0.9,
+                no_repeat_ngram_size=3,
+                length_penalty=1.0
             )
             
             # Decode and clean the response
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-            # Remove the input prompt from the response
-            response = response[len(user_input):].strip()
+            # Remove the prompt from the response
+            response = response[len(full_prompt):].strip()
+            
+            # If the response is not finance-related, return a redirect message
+            if not self._is_finance_related(response):
+                return "I apologize, but I can only provide information about investments, finance, SIP, and SWP. Please ask a question related to these topics."
             
             return response
             
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}", exc_info=True)
             return f"Error generating response: {str(e)}"
+    
+    def _is_finance_related(self, response):
+        """Check if the response is related to finance and investments."""
+        finance_keywords = [
+            'invest', 'finance', 'money', 'market', 'stock', 'bond', 'sip', 'swp',
+            'portfolio', 'return', 'risk', 'fund', 'equity', 'debt', 'asset',
+            'dividend', 'interest', 'capital', 'wealth', 'financial'
+        ]
+        
+        response_lower = response.lower()
+        return any(keyword in response_lower for keyword in finance_keywords)
 
 def initialize_chatbot():
     """Initialize the chatbot with detailed logging."""
@@ -900,8 +937,8 @@ def initialize_chatbot():
         return None
 
 def run_chatbot_section():
-    st.header("💬 Investment Chatbot")
-    st.write("Ask me any investment-related question!")
+    st.header("💬 Investment & Finance Chatbot")
+    st.write("Ask me about investments, SIP, SWP, and financial planning!")
 
     # Show log file location
     if os.path.exists('logs'):
@@ -946,7 +983,7 @@ def run_chatbot_section():
     user_query = st.text_input(
         "Type your message:",
         key="user_input",
-        placeholder="Ask about investments, markets, or financial planning..."
+        placeholder="Ask about investments, SIP, SWP, or financial planning..."
     )
 
     # Submit button
