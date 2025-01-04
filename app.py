@@ -1,14 +1,32 @@
 import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
-import boto3
-import json
-import os
-from langchain_aws import ChatBedrock
-from utils import calculate_sip, calculate_break_even, calculate_swp, create_investment_growth_report, create_swp_report, convert_df_to_excel, initialize_qa_bot, get_answer 
-import datetime
+import plotly.express as px
 from io import BytesIO
+from datetime import datetime
+
+from utils import (
+    calculate_sip,
+    calculate_break_even,
+    calculate_swp,
+    create_investment_growth_report,
+    create_swp_report,
+    convert_df_to_excel,
+    initialize_qa_bot,
+    get_answer
+)
+
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import torch
+from huggingface_hub import login
+import gc
+import logging
+import sys
+import os
+
+
+login(token="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")
+
+# from bot import initialize_chatbot
 # Set page configuration
 st.set_page_config(
     page_title="Investment Calculator",
@@ -561,61 +579,297 @@ elif option == "SWP Calculator":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# Chatbot Section
-if option == "Chatbot":
+def setup_logging():
+    """Configure logging to both file and console"""
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    
+    log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_filename),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    return logging.getLogger('ChatbotLogger')
+
+logger = setup_logging()
+
+def print_gpu_utilization():
+    print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+    print(f"GPU memory cached: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+
+class Llama2Chain:
+    def __init__(self):
+        try:
+            logger.info("Initializing Llama2Chain...")
+            
+            # Check CUDA availability and memory
+            if torch.cuda.is_available():
+                self.gpu_name = torch.cuda.get_device_name(0)
+                self.total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                logger.info(f"GPU: {self.gpu_name}")
+                logger.info(f"Total Memory: {self.total_memory:.2f} GB")
+            else:
+                logger.warning("No GPU detected - running on CPU")
+            
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            logger.info(f"Using device: {self.device}")
+            
+            # Initialize model configurations
+            self.model_name = "meta-llama/Llama-2-7b-chat-hf"
+            
+            # Create custom device map for limited VRAM
+            device_map = {
+                'model.embed_tokens': 'cpu',
+                'model.norm': 'cpu',
+                'lm_head': 'cpu',
+                'model.layers.0': 'cuda:0',
+                'model.layers.1': 'cuda:0',
+                'model.layers.2': 'cuda:0',
+                'model.layers.3': 'cpu',
+                'model.layers.4': 'cpu',
+                'model.layers.5': 'cpu'
+            }
+            
+            # Configure quantization with more aggressive settings
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,  # Changed to 4-bit quantization
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True
+            )
+            
+            # Initialize tokenizer with reduced model max length
+            logger.info("Loading tokenizer...")
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_name,
+                    model_max_length=256  # Reduced from 512
+                )
+                logger.info("Tokenizer loaded successfully")
+            except Exception as e:
+                logger.error(f"Error loading tokenizer: {str(e)}")
+                raise
+            
+            # Load model with optimized settings
+            logger.info("Loading model...")
+            try:
+                if torch.cuda.is_available():
+                    before_load_memory = torch.cuda.memory_allocated() / (1024**3)
+                    logger.info(f"GPU memory before model load: {before_load_memory:.2f} GB")
+                
+                # Clear cache before model loading
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    quantization_config=quantization_config,
+                    device_map=device_map,
+                    torch_dtype=torch.float16,
+                    offload_folder="offload_folder",
+                    offload_state_dict=True,  # Enable state dict offloading
+                    low_cpu_mem_usage=True
+                )
+                
+                if torch.cuda.is_available():
+                    after_load_memory = torch.cuda.memory_allocated() / (1024**3)
+                    logger.info(f"GPU memory after model load: {after_load_memory:.2f} GB")
+                    logger.info(f"Memory difference: {after_load_memory - before_load_memory:.2f} GB")
+                
+                logger.info("Model loaded successfully")
+                
+            except Exception as e:
+                logger.error(f"Error loading model: {str(e)}")
+                raise
+            
+            # Additional optimizations
+            self.model.eval()
+            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.backends.cudnn.benchmark = True
+                logger.info("CUDA optimizations enabled")
+            
+        except Exception as e:
+            logger.error(f"Fatal error during initialization: {str(e)}", exc_info=True)
+            raise
+
+    def __call__(self, inputs: Dict[str, str]) -> Dict[str, str]:
+        try:
+            logger.info("Starting inference...")
+            
+            prompt = f"""<s>[INST] You are a helpful investment advisor chatbot. 
+            Please answer the following question:
+            {inputs['input']} [/INST]"""
+            
+            # Memory optimization before generation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                gc.collect()
+            
+            # Tokenize with reduced maximum length
+            logger.debug("Tokenizing input...")
+            with torch.cuda.amp.autocast():
+                inputs = self.tokenizer(
+                    prompt,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=128  # Further reduced for generation
+                )
+                
+                # Move inputs to appropriate device based on device map
+                inputs = {k: v.to('cuda:0') if k == 'input_ids' else v.to('cpu') 
+                         for k, v in inputs.items()}
+                
+                # Generate with memory-optimized parameters
+                logger.info("Generating response...")
+                outputs = self.model.generate(
+                    inputs['input_ids'],
+                    max_new_tokens=64,  # Reduced from 128
+                    temperature=0.7,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    num_beams=1,
+                    no_repeat_ngram_size=3,
+                    early_stopping=True,
+                    use_cache=True
+                )
+            
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            response = response.split("[/INST]")[-1].strip()
+            
+            # Cleanup
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                gc.collect()
+            
+            return {"output": response}
+            
+        except Exception as e:
+            logger.error(f"Error during inference: {str(e)}", exc_info=True)
+            return {"output": f"I apologize, but I encountered an error. Please try again. Error: {str(e)}"}
+        
+    def __del__(self):
+        logger.info("Cleaning up resources...")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+        logger.info("Cleanup completed")
+
+def initialize_chatbot():
+    """Initialize the Llama 2 chatbot with detailed logging."""
+    logger.info("Starting chatbot initialization...")
+    try:
+        # Clear GPU memory
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+            logger.info("GPU memory cleared")
+            
+            # Log GPU information
+            torch.cuda.set_device(0)
+            gpu_name = torch.cuda.get_device_name(0)
+            total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            logger.info(f"Using GPU: {gpu_name}")
+            logger.info(f"Total GPU Memory: {total_memory:.2f} GB")
+            
+            st.success(f"Using GPU: {gpu_name}")
+            st.info(f"Total GPU Memory: {total_memory:.2f} GB")
+        
+        # Initialize chatbot
+        logger.info("Creating Llama2Chain instance...")
+        chatbot = Llama2Chain()
+        logger.info("Chatbot initialization successful")
+        return chatbot
+        
+    except Exception as e:
+        logger.error("Failed to initialize chatbot", exc_info=True)
+        st.error(f"Error initializing chatbot: {str(e)}")
+        return None
+
+def run_chatbot_section():
     st.header("💬 Investment Chatbot")
     st.write("Ask me any investment-related question!")
-
-    # Load the QA system
-    qa_chain = load_qa_system()
     
-    # Initialize chat history in session state if it doesn't exist
+    # Show log file location
+    if os.path.exists('logs'):
+        log_files = [f for f in os.listdir('logs') if f.endswith('.log')]
+        if log_files:
+            latest_log = max(log_files, key=lambda x: os.path.getctime(os.path.join('logs', x)))
+            st.info(f"Debug logs are being written to: logs/{latest_log}")
+
+    # Initialize the chatbot chain
+    @st.cache_resource
+    def get_chatbot():
+        return initialize_chatbot()
+    
+    chatbot_chain = get_chatbot()
+
+    # Initialize chat history
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    def clean_response(response):
-        # Remove "Answer:" prefix if it exists
-        if response.startswith("Answer:"):
-            response = response[7:].strip()
-        
-        # Split by "Sources:" and take only the answer part
-        response = response.split("Sources:")[0].strip()
-        return response
-
-    # Create the text area for user input
-    user_query = st.text_area(
-        "Your question:", 
-        height=100, 
-        key="user_input"
-    )
-
-    # Handle submit button click
-    if st.button("Ask", key="ask_chatbot"):
-        if user_query.strip():
-            with st.spinner("Getting response..."):
-                try:
-                    # Get response from the QA system
-                    response = get_answer(qa_chain, user_query)
-                    
-                    # Clean the response before storing
-                    cleaned_response = clean_response(response)
-                    
-                    # Add the Q&A pair to chat history
-                    st.session_state.chat_history.append({
-                        "question": user_query,
-                        "answer": cleaned_response
-                    })
-                    
-                except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
-        else:
-            st.warning("Please enter a question.")
+    # Chat container
+    chat_container = st.container()
 
     # Display chat history
     if st.session_state.chat_history:
-        st.subheader("Chat History")
-        for i, chat in enumerate(reversed(st.session_state.chat_history)):
-            with st.container():
-                st.markdown("---")
-                st.write("**Q:** " + chat["question"])
-                st.write("**A:** " + chat["answer"])
+        with chat_container:
+            st.subheader("Chat History")
+            for chat in st.session_state.chat_history:
+                st.markdown(
+                    f"""<div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
+                        <b>You:</b> {chat['question']}
+                    </div>""", 
+                    unsafe_allow_html=True
+                )
+                st.markdown(
+                    f"""<div style='background-color: #e8f0fe; padding: 10px; border-radius: 5px; margin-bottom: 20px;'>
+                        <b>Bot:</b> {chat['answer']}
+                    </div>""", 
+                    unsafe_allow_html=True
+                )
+
+    # Text input
+    user_query = st.text_input(
+        "Type your message:",
+        key="user_input",
+        placeholder="Ask about investments, markets, or financial planning..."
+    )
+
+    # Submit button
+    if st.button("Send", key="send_chatbot", type="primary"):
+        if user_query.strip():
+            if chatbot_chain:
+                with st.spinner("Thinking..."):
+                    try:
+                        logger.info(f"Processing user query: {user_query}")
+                        
+                        response = chatbot_chain({"input": user_query})
+                        bot_answer = response.get('output', "I apologize, but I couldn't generate a valid response. Please try again.")
+                        formatted_answer = bot_answer.replace("\n", "\n\n")
+                        
+                        st.session_state.chat_history.append({
+                            "question": user_query,
+                            "answer": formatted_answer
+                        })
+                        
+                        logger.info("Response generated and added to chat history")
+                            
+                    except Exception as e:
+                        logger.error(f"Error during chat interaction: {str(e)}", exc_info=True)
+                        st.error(f"An error occurred during generation: {str(e)}")
+            else:
+                logger.error("Chatbot chain is not initialized")
+                st.error("Chatbot initialization failed. Please check logs for details.")
+        else:
+            logger.warning("Empty query submitted")
+            st.warning("Please enter a message before sending.")
+
+if __name__ == "__main__":
+    run_chatbot_section()
