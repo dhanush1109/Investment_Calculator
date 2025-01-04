@@ -1,3 +1,4 @@
+accelerate
 pandas
 langchain-aws
 plotly
