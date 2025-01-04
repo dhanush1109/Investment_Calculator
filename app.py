@@ -579,51 +579,106 @@ elif option == "SWP Calculator":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-def setup_logging():
-    """Configure logging to both file and console"""
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
-    
-    log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-    
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_filename),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-    return logging.getLogger('ChatbotLogger')
+import os
+import gc
+import sys
+import logging
+import torch
+from datetime import datetime
+from typing import Dict, Optional
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from dataclasses import dataclass
+from enum import Enum
 
-logger = setup_logging()
+class BackendType(Enum):
+    CUDA = "cuda"
+    MPS = "mps"
+    CPU = "cpu"
+    ROCM = "rocm"
+    IPEX = "ipex"
 
-def print_gpu_utilization():
-    print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-    print(f"GPU memory cached: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+@dataclass
+class BackendConfig:
+    device_type: BackendType
+    quantization_supported: bool
+    max_memory: Optional[float] = None
+    device_name: Optional[str] = None
 
-class Llama2Chain:
+class MultiBackendLlama:
     def __init__(self):
+        self.logger = self._setup_logging()
+        self.backend = self._detect_backend()
+        self.logger.info(f"Initialized with backend: {self.backend.device_type.value}")
+        self._initialize_model()
+
+    def _setup_logging(self):
+        """Configure logging to both file and console"""
+        if not os.path.exists('logs'):
+            os.makedirs('logs')
+        
+        log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_filename),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+        return logging.getLogger('ChatbotLogger')
+
+    def _detect_backend(self) -> BackendConfig:
+        """Detect and configure the best available backend"""
         try:
-            logger.info("Initializing Llama2Chain...")
-            
-            # Check CUDA availability and memory
+            # Check CUDA
             if torch.cuda.is_available():
-                self.gpu_name = torch.cuda.get_device_name(0)
-                self.total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-                logger.info(f"GPU: {self.gpu_name}")
-                logger.info(f"Total Memory: {self.total_memory:.2f} GB")
+                device_name = torch.cuda.get_device_name(0)
+                max_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                return BackendConfig(
+                    device_type=BackendType.CUDA,
+                    quantization_supported=True,
+                    max_memory=max_memory,
+                    device_name=device_name
+                )
+            
+            # Check MPS (Apple Silicon)
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                return BackendConfig(
+                    device_type=BackendType.MPS,
+                    quantization_supported=False,
+                    device_name="Apple Silicon"
+                )
+            
+            # Check for IPEX (Intel)
+            elif os.environ.get('INTEL_EXTENSION_FOR_PYTORCH', False):
+                import intel_extension_for_pytorch as ipex
+                return BackendConfig(
+                    device_type=BackendType.IPEX,
+                    quantization_supported=True,
+                    device_name="Intel CPU/GPU"
+                )
+            
+            # Fallback to CPU
             else:
-                logger.warning("No GPU detected - running on CPU")
-            
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            logger.info(f"Using device: {self.device}")
-            
-            # Initialize model configurations
-            self.model_name = "meta-llama/Llama-2-7b-chat-hf"
-            
-            # Create custom device map for limited VRAM
-            device_map = {
+                return BackendConfig(
+                    device_type=BackendType.CPU,
+                    quantization_supported=False,
+                    device_name="CPU"
+                )
+                
+        except Exception as e:
+            self.logger.warning(f"Error detecting backend: {str(e)}. Falling back to CPU.")
+            return BackendConfig(
+                device_type=BackendType.CPU,
+                quantization_supported=False,
+                device_name="CPU"
+            )
+
+    def _get_device_map(self):
+        """Generate appropriate device map based on backend"""
+        if self.backend.device_type == BackendType.CUDA:
+            return {
                 'model.embed_tokens': 'cpu',
                 'model.norm': 'cpu',
                 'lm_head': 'cpu',
@@ -634,132 +689,129 @@ class Llama2Chain:
                 'model.layers.4': 'cpu',
                 'model.layers.5': 'cpu'
             }
+        return "auto"
+
+    def _get_quantization_config(self):
+        """Get quantization configuration based on backend support"""
+        if not self.backend.quantization_supported:
+            return None
             
-            # Configure quantization with more aggressive settings
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,  # Changed to 4-bit quantization
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True
+        )
+
+    def _initialize_model(self):
+        """Initialize the model with backend-specific configurations"""
+        try:
+            self.model_name = "meta-llama/Llama-2-7b-chat-hf"
+            
+            # Initialize tokenizer
+            self.logger.info("Loading tokenizer...")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                model_max_length=256
             )
             
-            # Initialize tokenizer with reduced model max length
-            logger.info("Loading tokenizer...")
-            try:
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name,
-                    model_max_length=256  # Reduced from 512
-                )
-                logger.info("Tokenizer loaded successfully")
-            except Exception as e:
-                logger.error(f"Error loading tokenizer: {str(e)}")
-                raise
+            # Prepare model configuration
+            model_kwargs = {
+                "torch_dtype": torch.float16 if self.backend.device_type != BackendType.CPU else torch.float32,
+                "device_map": self._get_device_map(),
+                "offload_folder": "offload_folder",
+                "offload_state_dict": True,
+                "low_cpu_mem_usage": True
+            }
             
-            # Load model with optimized settings
-            logger.info("Loading model...")
-            try:
-                if torch.cuda.is_available():
-                    before_load_memory = torch.cuda.memory_allocated() / (1024**3)
-                    logger.info(f"GPU memory before model load: {before_load_memory:.2f} GB")
-                
-                # Clear cache before model loading
-                torch.cuda.empty_cache()
-                gc.collect()
-                
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name,
-                    quantization_config=quantization_config,
-                    device_map=device_map,
-                    torch_dtype=torch.float16,
-                    offload_folder="offload_folder",
-                    offload_state_dict=True,  # Enable state dict offloading
-                    low_cpu_mem_usage=True
-                )
-                
-                if torch.cuda.is_available():
-                    after_load_memory = torch.cuda.memory_allocated() / (1024**3)
-                    logger.info(f"GPU memory after model load: {after_load_memory:.2f} GB")
-                    logger.info(f"Memory difference: {after_load_memory - before_load_memory:.2f} GB")
-                
-                logger.info("Model loaded successfully")
-                
-            except Exception as e:
-                logger.error(f"Error loading model: {str(e)}")
-                raise
+            # Add quantization if supported
+            quant_config = self._get_quantization_config()
+            if quant_config:
+                model_kwargs["quantization_config"] = quant_config
             
-            # Additional optimizations
-            self.model.eval()
-            if hasattr(torch, 'cuda') and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.backends.cudnn.benchmark = True
-                logger.info("CUDA optimizations enabled")
+            # Load model
+            self.logger.info(f"Loading model with {self.backend.device_type.value} backend...")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                **model_kwargs
+            )
+            
+            # Backend-specific optimizations
+            self._apply_backend_optimizations()
             
         except Exception as e:
-            logger.error(f"Fatal error during initialization: {str(e)}", exc_info=True)
+            self.logger.error(f"Error initializing model: {str(e)}")
             raise
+
+    def _apply_backend_optimizations(self):
+        """Apply backend-specific optimizations"""
+        self.model.eval()
+        
+        if self.backend.device_type == BackendType.CUDA:
+            torch.cuda.empty_cache()
+            torch.backends.cudnn.benchmark = True
+        elif self.backend.device_type == BackendType.IPEX:
+            import intel_extension_for_pytorch as ipex
+            self.model = ipex.optimize(self.model)
 
     def __call__(self, inputs: Dict[str, str]) -> Dict[str, str]:
         try:
-            logger.info("Starting inference...")
+            self.logger.info("Starting inference...")
             
             prompt = f"""<s>[INST] You are a helpful investment advisor chatbot. 
             Please answer the following question:
             {inputs['input']} [/INST]"""
             
-            # Memory optimization before generation
-            if torch.cuda.is_available():
+            # Memory cleanup
+            if self.backend.device_type == BackendType.CUDA:
                 torch.cuda.empty_cache()
                 gc.collect()
             
-            # Tokenize with reduced maximum length
-            logger.debug("Tokenizing input...")
-            with torch.cuda.amp.autocast():
-                inputs = self.tokenizer(
-                    prompt,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=128  # Further reduced for generation
-                )
-                
-                # Move inputs to appropriate device based on device map
+            # Tokenize
+            inputs = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=128
+            )
+            
+            # Move inputs to appropriate device
+            device = self.backend.device_type.value
+            if device == "cuda":
                 inputs = {k: v.to('cuda:0') if k == 'input_ids' else v.to('cpu') 
                          for k, v in inputs.items()}
-                
-                # Generate with memory-optimized parameters
-                logger.info("Generating response...")
-                outputs = self.model.generate(
-                    inputs['input_ids'],
-                    max_new_tokens=64,  # Reduced from 128
-                    temperature=0.7,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    num_beams=1,
-                    no_repeat_ngram_size=3,
-                    early_stopping=True,
-                    use_cache=True
-                )
+            else:
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # Generate response
+            outputs = self.model.generate(
+                inputs['input_ids'],
+                max_new_tokens=64,
+                temperature=0.7,
+                do_sample=True,
+                pad_token_id=self.tokenizer.eos_token_id,
+                num_beams=1,
+                no_repeat_ngram_size=3,
+                early_stopping=True,
+                use_cache=True
+            )
             
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             response = response.split("[/INST]")[-1].strip()
             
-            # Cleanup
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                gc.collect()
-            
             return {"output": response}
             
         except Exception as e:
-            logger.error(f"Error during inference: {str(e)}", exc_info=True)
-            return {"output": f"I apologize, but I encountered an error. Please try again. Error: {str(e)}"}
-        
+            self.logger.error(f"Error during inference: {str(e)}")
+            return {"output": f"I apologize, but I encountered an error: {str(e)}"}
+
     def __del__(self):
-        logger.info("Cleaning up resources...")
-        if torch.cuda.is_available():
+        """Cleanup resources"""
+        self.logger.info("Cleaning up resources...")
+        if self.backend.device_type == BackendType.CUDA:
             torch.cuda.empty_cache()
-            gc.collect()
-        logger.info("Cleanup completed")
+        gc.collect()
 
 def initialize_chatbot():
     """Initialize the Llama 2 chatbot with detailed logging."""
