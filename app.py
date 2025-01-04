@@ -953,79 +953,72 @@ def run_chatbot_section():
 
     chatbot = get_chatbot()
 
+    # Initialize chat history if not exists
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    
+    # Initialize message keys if not exists
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    # Create a container for chat history at the top
+    # Display chat history
     chat_container = st.container()
-
-    # Display chat history with new styling
     with chat_container:
-        for chat in st.session_state.chat_history:
+        for message in st.session_state.chat_history:
             st.markdown(
                 f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-family: monospace;'>
-                    <b>You:</b> {chat['question']}
+                    <b>You:</b> {message['question']}
                 </div>""",
                 unsafe_allow_html=True
             )
             st.markdown(
                 f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace;'>
-                    <b>Bot:</b> {chat['answer']}
+                    <b>Bot:</b> {message['answer']}
                 </div>""",
                 unsafe_allow_html=True
             )
 
-    user_query = st.text_input(
-        "Type your message:",
-        key="user_input",
-        placeholder="Ask about investments, SIP, SWP, or financial planning..."
-    )
+    # Get user input
+    if prompt := st.chat_input("Ask about investments, SIP, SWP, or financial planning..."):
+        if chatbot:
+            try:
+                logger.info(f"Processing user query: {prompt}")
+                
+                # Add user message to chat history
+                st.markdown(
+                    f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-family: monospace;'>
+                        <b>You:</b> {prompt}
+                    </div>""",
+                    unsafe_allow_html=True
+                )
 
-    if st.button("Send", key="send_chatbot", type="primary"):
-        if user_query.strip():
-            if chatbot:
+                # Generate response with spinner
                 with st.spinner("Thinking..."):
-                    try:
-                        logger.info(f"Processing user query: {user_query}")
-                        
-                        # Generate response
-                        bot_answer = chatbot.generate_response(user_query)
-                        formatted_answer = bot_answer.replace("\n", "\n\n")
-                        
-                        # Add to chat history
-                        st.session_state.chat_history.append({
-                            "question": user_query,
-                            "answer": formatted_answer
-                        })
-                        
-                        # Immediately display the new message
-                        st.markdown(
-                            f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-family: monospace;'>
-                                <b>You:</b> {user_query}
-                            </div>""",
-                            unsafe_allow_html=True
-                        )
-                        st.markdown(
-                            f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace;'>
-                                <b>Bot:</b> {formatted_answer}
-                            </div>""",
-                            unsafe_allow_html=True
-                        )
-                        
-                        logger.info("Response generated and displayed")
-                        
-                        # Clear the input field after sending
-                        st.session_state.user_input = ""
-                        
-                    except Exception as e:
-                        logger.error(f"Error during chat interaction: {str(e)}", exc_info=True)
-                        st.error(f"An error occurred: {str(e)}")
-            else:
-                logger.error("Chatbot is not initialized")
-                st.error("Chatbot initialization failed. Check logs for details.")
+                    response = chatbot.generate_response(prompt)
+                    formatted_response = response.replace("\n", "\n\n")
+
+                # Display bot response
+                st.markdown(
+                    f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace;'>
+                        <b>Bot:</b> {formatted_response}
+                    </div>""",
+                    unsafe_allow_html=True
+                )
+
+                # Update chat history
+                st.session_state.chat_history.append({
+                    "question": prompt,
+                    "answer": formatted_response
+                })
+
+                logger.info("Response generated and chat history updated")
+
+            except Exception as e:
+                logger.error(f"Error during chat interaction: {str(e)}", exc_info=True)
+                st.error(f"An error occurred: {str(e)}")
         else:
-            logger.warning("Empty query submitted")
-            st.warning("Please enter a message before sending.")
+            logger.error("Chatbot is not initialized")
+            st.error("Chatbot initialization failed. Check logs for details.")
 
 if __name__ == "__main__":
     run_chatbot_section()
