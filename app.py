@@ -33,6 +33,7 @@ from typing import Dict, Optional
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from dataclasses import dataclass
 from enum import Enum
+import logger 
 
 login(token="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")
 
@@ -803,6 +804,7 @@ from datetime import datetime
 import torch
 import gc
 import streamlit as st
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # Setup logging function
 def setup_logging():
@@ -813,33 +815,65 @@ def setup_logging():
     logger = logging.getLogger('ChatbotLogger')
     logger.setLevel(logging.DEBUG)
 
-    # Create a unique log filename with a timestamp
     log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-
-    # File handler
     file_handler = logging.FileHandler(log_filename)
     file_handler.setLevel(logging.DEBUG)
-
-    # Console handler
+    
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-
-    # Create formatter
+    
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
     console_handler.setFormatter(formatter)
-
-    # Add handlers to logger if not already added
+    
     if not logger.handlers:
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
-
+    
     return logger
 
-# Initialize logger globally
 logger = setup_logging()
 
-# Initialize chatbot function
+class LLMChatbot:
+    def __init__(self, model_name="gpt2"):
+        """Initialize the LLM chatbot with the specified model."""
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        
+        if torch.cuda.is_available():
+            self.model = self.model.to('cuda')
+            self.device = 'cuda'
+        else:
+            self.device = 'cpu'
+    
+    def generate_response(self, user_input, max_length=100):
+        """Generate a response using the LLM model."""
+        try:
+            # Prepare the input
+            inputs = self.tokenizer.encode(user_input, return_tensors='pt').to(self.device)
+            
+            # Generate response
+            outputs = self.model.generate(
+                inputs,
+                max_length=max_length,
+                num_return_sequences=1,
+                pad_token_id=self.tokenizer.eos_token_id,
+                do_sample=True,
+                temperature=0.7
+            )
+            
+            # Decode and clean the response
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # Remove the input prompt from the response
+            response = response[len(user_input):].strip()
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error generating response: {str(e)}", exc_info=True)
+            return f"Error generating response: {str(e)}"
+
 def initialize_chatbot():
     """Initialize the chatbot with detailed logging."""
     logger.info("Starting chatbot initialization...")
@@ -849,29 +883,27 @@ def initialize_chatbot():
             torch.cuda.empty_cache()
             gc.collect()
             logger.info("GPU memory cleared")
-
-            # Log GPU information
+            
             torch.cuda.set_device(0)
             gpu_name = torch.cuda.get_device_name(0)
             total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             logger.info(f"Using GPU: {gpu_name}")
             logger.info(f"Total GPU Memory: {total_memory:.2f} GB")
-
+            
             st.success(f"Using GPU: {gpu_name}")
             st.info(f"Total GPU Memory: {total_memory:.2f} GB")
-
-        # Initialize chatbot (dummy initialization for example purposes)
-        logger.info("Creating MultiBackendLlama instance...")
-        chatbot = "MultiBackendLlama instance"  # Replace with actual initialization
+        
+        # Initialize the LLM chatbot
+        logger.info("Creating LLM Chatbot instance...")
+        chatbot = LLMChatbot()
         logger.info("Chatbot initialization successful")
         return chatbot
-
+        
     except Exception as e:
         logger.error("Failed to initialize chatbot", exc_info=True)
         st.error(f"Error initializing chatbot: {str(e)}")
         return None
 
-# Main chatbot section
 def run_chatbot_section():
     st.header("💬 Investment Chatbot")
     st.write("Ask me any investment-related question!")
@@ -888,7 +920,7 @@ def run_chatbot_section():
     def get_chatbot():
         return initialize_chatbot()
 
-    chatbot_chain = get_chatbot()
+    chatbot = get_chatbot()
 
     # Initialize chat history
     if "chat_history" not in st.session_state:
@@ -925,28 +957,27 @@ def run_chatbot_section():
     # Submit button
     if st.button("Send", key="send_chatbot", type="primary"):
         if user_query.strip():
-            if chatbot_chain:
+            if chatbot:
                 with st.spinner("Thinking..."):
                     try:
                         logger.info(f"Processing user query: {user_query}")
-
-                        # Simulate chatbot response for demonstration purposes
-                        response = {"output": f"Response to: {user_query}"}
-                        bot_answer = response.get('output', "I couldn't generate a valid response.")
+                        
+                        # Generate response using the LLM
+                        bot_answer = chatbot.generate_response(user_query)
                         formatted_answer = bot_answer.replace("\n", "\n\n")
-
+                        
                         st.session_state.chat_history.append({
                             "question": user_query,
                             "answer": formatted_answer
                         })
-
+                        
                         logger.info("Response generated and added to chat history")
-
+                        
                     except Exception as e:
                         logger.error(f"Error during chat interaction: {str(e)}", exc_info=True)
                         st.error(f"An error occurred: {str(e)}")
             else:
-                logger.error("Chatbot chain is not initialized")
+                logger.error("Chatbot is not initialized")
                 st.error("Chatbot initialization failed. Check logs for details.")
         else:
             logger.warning("Empty query submitted")
