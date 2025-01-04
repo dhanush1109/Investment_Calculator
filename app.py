@@ -820,28 +820,40 @@ def setup_logging():
 logger = setup_logging()
 
 class LLMChatbot:
-    def __init__(self, model_name="meta-llama/Llama-3.3-70B-Instruct"):
-        """Initialize the Llama chatbot with HuggingFace authentication."""
+    def __init__(self, model_name="facebook/opt-1.3b"):  # Using a smaller model that works on CPU
+        """Initialize the chatbot with CPU support."""
         try:
-            logger.info(f"Loading {model_name} model and tokenizer...")
+            st.info("Starting model initialization... This may take a few minutes.")
+            logger.info(f"Starting initialization of {model_name}")
             
-            # Initialize tokenizer with trust_remote_code for Llama
+            # Step 1: Login to Hugging Face
+            st.text("Authenticating with Hugging Face...")
+            login(token="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")
+            logger.info("Hugging Face authentication successful")
+            
+            # Step 2: Load tokenizer
+            st.text("Loading tokenizer...")
             self.tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
                 trust_remote_code=True,
-                use_auth_token=True
+                use_auth_token=True,
+                cache_dir="./model_cache"
             )
+            logger.info("Tokenizer loaded successfully")
             
-            # Initialize model with specific configuration for Llama
+            # Step 3: Load model without CUDA-specific configurations
+            st.text("Loading model... This may take several minutes...")
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 trust_remote_code=True,
                 use_auth_token=True,
-                torch_dtype=torch.float16,  # Use float16 for memory efficiency
-                device_map="auto",  # Automatically handle model placement
-                load_in_8bit=True  # Use 8-bit quantization to reduce memory usage
+                low_cpu_mem_usage=True,
+                cache_dir="./model_cache"
             )
             
+            logger.info("Model loaded successfully")
+            
+            # Step 4: Setup configurations
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
             
@@ -858,31 +870,33 @@ class LLMChatbot:
             
             Current question: {user_input} [/INST]"""
             
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(f"Model initialized successfully on {self.device}")
+            self.device = "cpu"
+            st.success(f"Model initialized successfully on CPU")
+            logger.info("Full initialization complete on CPU")
             
         except Exception as e:
-            logger.error(f"Error initializing model: {str(e)}", exc_info=True)
+            logger.error(f"Error in initialization: {str(e)}", exc_info=True)
+            st.error(f"Initialization Error: {str(e)}")
             raise
-    
+
     def generate_response(self, user_input, max_new_tokens=150):
-        """Generate a response using the Llama model."""
+        """Generate a response using CPU."""
         try:
-            # Format prompt according to Llama instruction format
+            # Format prompt
             full_prompt = self.system_prompt.format(user_input=user_input)
             
-            # Tokenize with Llama-specific parameters
+            # Tokenize input
             inputs = self.tokenizer(
                 full_prompt,
                 padding=True,
                 truncation=True,
                 return_tensors="pt",
-                max_length=512,  # Limit input length
+                max_length=512,
                 add_special_tokens=True,
                 return_attention_mask=True
-            ).to(self.device)
+            )
             
-            # Generate response with Llama-optimized parameters
+            # Generate response with CPU-friendly parameters
             outputs = self.model.generate(
                 input_ids=inputs.input_ids,
                 attention_mask=inputs.attention_mask,
@@ -892,26 +906,19 @@ class LLMChatbot:
                 do_sample=True,
                 temperature=0.7,
                 top_p=0.9,
-                top_k=40,
-                repetition_penalty=1.1,
-                no_repeat_ngram_size=3,
-                early_stopping=True
+                no_repeat_ngram_size=3
             )
             
-            # Decode and clean response
             response = self.tokenizer.decode(
                 outputs[0][inputs.input_ids.shape[1]:],
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=True
             )
             
-            # Clean up response
-            response = self._clean_response(response)
-            
             return response.strip()
             
         except Exception as e:
-            logger.error(f"Error generating response: {str(e)}", exc_info=True)
+            logger.error(f"Error generating response: {str(e)}")
             return "I apologize, but I encountered an error. Please try asking your question again."
     
     def _clean_response(self, response):
@@ -943,32 +950,30 @@ class LLMChatbot:
 
 # The rest of the code (initialize_chatbot and run_chatbot_section) remains the same
 def initialize_chatbot():
-    """Initialize the chatbot with Llama model."""
-    logger.info("Starting Llama chatbot initialization...")
+    """Initialize the CPU-based chatbot."""
     try:
-        # Clear GPU memory before initialization
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
-            logger.info("GPU memory cleared")
-            
-            # Log GPU information
-            gpu_name = torch.cuda.get_device_name(0)
-            total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            logger.info(f"Using GPU: {gpu_name}")
-            logger.info(f"Total GPU Memory: {total_memory:.2f} GB")
-            
-            st.success(f"Using GPU: {gpu_name}")
-            st.info(f"Total GPU Memory: {total_memory:.2f} GB")
+        # Create cache directory if it doesn't exist
+        os.makedirs("./model_cache", exist_ok=True)
         
-        logger.info("Creating Llama Chatbot instance...")
-        chatbot = LLMChatbot()
-        logger.info("Chatbot initialization successful")
-        return chatbot
-        
+        # Display initialization progress
+        with st.spinner("Initializing CPU-based chatbot..."):
+            st.info("Running on CPU - responses may be slower but still functional")
+            
+            # Initialize chatbot
+            chatbot = LLMChatbot()
+            return chatbot
+            
     except Exception as e:
-        logger.error("Failed to initialize chatbot", exc_info=True)
-        st.error(f"Error initializing chatbot: {str(e)}")
+        logger.error(f"Chatbot initialization failed: {str(e)}", exc_info=True)
+        st.error(f"""
+        Failed to initialize chatbot. Error: {str(e)}
+        
+        Troubleshooting steps:
+        1. Check your internet connection
+        2. Verify your Hugging Face token is valid
+        3. Ensure you have enough RAM (at least 8GB recommended)
+        4. Try clearing your browser cache and refreshing
+        """)
         return None
     
 def run_chatbot_section():
