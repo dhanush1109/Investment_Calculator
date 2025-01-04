@@ -9,3 +9,6 @@ transformers
 langchain-community
 faiss-cpu
 sentence-transformers
+huggingface-hub
+langchain
+utils
