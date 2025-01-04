@@ -14,7 +14,7 @@ from utils import (
     initialize_qa_bot,
     get_answer
 )
-
+import intel_extension_for_pytorch as ipex
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 from huggingface_hub import login
@@ -33,6 +33,7 @@ from typing import Dict, Optional
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from dataclasses import dataclass
 from enum import Enum
+import logger 
 
 login(token="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")
 
@@ -616,32 +617,32 @@ class MultiBackendLlama:
         # Create logs directory if it doesn't exist
         if not os.path.exists('logs'):
             os.makedirs('logs')
-        
-        # Create a unique log filename with timestamp
-        log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-        
-        # Configure logging
-        logger = logging.getLogger('ChatbotLogger')
-        logger.setLevel(logging.DEBUG)
-        
-        # File handler
-        file_handler = logging.FileHandler(log_filename)
-        file_handler.setLevel(logging.DEBUG)
-        
-        # Console handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
-        
-        # Create formatter
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        console_handler.setFormatter(formatter)
-        
-        # Add handlers to logger
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
-        
-        return logger
+
+            logger = logging.getLogger('ChatbotLogger')
+            logger.setLevel(logging.DEBUG)
+
+            # Create a unique log filename with timestamp
+            log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+
+            # File handler
+            file_handler = logging.FileHandler(log_filename)
+            file_handler.setLevel(logging.DEBUG)
+
+            # Console handler
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setLevel(logging.INFO)
+
+            # Create formatter
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            file_handler.setFormatter(formatter)
+            console_handler.setFormatter(formatter)
+
+            # Add handlers to logger if they haven't been added already
+            if not logger.handlers:
+                logger.addHandler(file_handler)
+                logger.addHandler(console_handler)
+                
+            return logger
 
     def _detect_backend(self) -> BackendConfig:
         """Detect and configure the best available backend"""
@@ -667,7 +668,6 @@ class MultiBackendLlama:
             
             # Check for IPEX (Intel)
             elif os.environ.get('INTEL_EXTENSION_FOR_PYTORCH', False):
-                import intel_extension_for_pytorch as ipex
                 return BackendConfig(
                     device_type=BackendType.IPEX,
                     quantization_supported=True,
@@ -766,7 +766,7 @@ class MultiBackendLlama:
             torch.cuda.empty_cache()
             torch.backends.cudnn.benchmark = True
         elif self.backend.device_type == BackendType.IPEX:
-            import intel_extension_for_pytorch as ipex
+            # import intel_extension_for_pytorch as ipex
             self.model = ipex.optimize(self.model)
 
     def __call__(self, inputs: Dict[str, str]) -> Dict[str, str]:
@@ -830,10 +830,7 @@ class MultiBackendLlama:
 
 def initialize_chatbot():
     """Initialize the Llama 2 chatbot with detailed logging."""
-    # Set up logging first
-    logger = setup_logging()
     logger.info("Starting chatbot initialization...")
-    
     try:
         # Clear GPU memory
         if torch.cuda.is_available():
@@ -852,8 +849,8 @@ def initialize_chatbot():
             st.info(f"Total GPU Memory: {total_memory:.2f} GB")
         
         # Initialize chatbot
-        logger.info("Creating Llama2Chain instance...")
-        chatbot = MultiBackendLlama()  # Using the MultiBackendLlama class instead of Llama2Chain
+        logger.info("Creating MultiBackendLlama instance...")
+        chatbot = MultiBackendLlama()
         logger.info("Chatbot initialization successful")
         return chatbot
         
@@ -865,9 +862,6 @@ def initialize_chatbot():
 def run_chatbot_section():
     st.header("💬 Investment Chatbot")
     st.write("Ask me any investment-related question!")
-    
-    # Initialize logger
-    logger = setup_logging()
     
     # Show log file location
     if os.path.exists('logs'):
