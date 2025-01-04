@@ -22,7 +22,7 @@ import gc
 import logging
 import sys
 import os
-
+import logging
 
 login(token="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")
 
@@ -611,22 +611,37 @@ class MultiBackendLlama:
         self.logger.info(f"Initialized with backend: {self.backend.device_type.value}")
         self._initialize_model()
 
-    def _setup_logging(self):
-        """Configure logging to both file and console"""
-        if not os.path.exists('logs'):
-            os.makedirs('logs')
-        
-        log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-        
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_filename),
-                logging.StreamHandler(sys.stdout)
-            ]
-        )
-        return logging.getLogger('ChatbotLogger')
+    def setup_logging():
+    """Set up logging configuration for the application"""
+    # Create logs directory if it doesn't exist
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    
+    # Create a unique log filename with timestamp
+    log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    
+    # Configure logging
+    logger = logging.getLogger('ChatbotLogger')
+    logger.setLevel(logging.DEBUG)
+    
+    # File handler
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.DEBUG)
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Add handlers to logger
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
 
     def _detect_backend(self) -> BackendConfig:
         """Detect and configure the best available backend"""
@@ -815,7 +830,10 @@ class MultiBackendLlama:
 
 def initialize_chatbot():
     """Initialize the Llama 2 chatbot with detailed logging."""
+    # Set up logging first
+    logger = setup_logging()
     logger.info("Starting chatbot initialization...")
+    
     try:
         # Clear GPU memory
         if torch.cuda.is_available():
@@ -835,7 +853,7 @@ def initialize_chatbot():
         
         # Initialize chatbot
         logger.info("Creating Llama2Chain instance...")
-        chatbot = Llama2Chain()
+        chatbot = MultiBackendLlama()  # Using the MultiBackendLlama class instead of Llama2Chain
         logger.info("Chatbot initialization successful")
         return chatbot
         
@@ -843,10 +861,13 @@ def initialize_chatbot():
         logger.error("Failed to initialize chatbot", exc_info=True)
         st.error(f"Error initializing chatbot: {str(e)}")
         return None
-
+        
 def run_chatbot_section():
     st.header("💬 Investment Chatbot")
     st.write("Ask me any investment-related question!")
+    
+    # Initialize logger
+    logger = setup_logging()
     
     # Show log file location
     if os.path.exists('logs'):
