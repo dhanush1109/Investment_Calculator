@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 from io import BytesIO
 from datetime import datetime
-
+from typing import Dict, List
 from utils import (
     calculate_sip,
     calculate_break_even,
