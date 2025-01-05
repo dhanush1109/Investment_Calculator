@@ -14,7 +14,7 @@ from utils import (
     initialize_qa_bot,
     get_answer
 )
-import intel_extension_for_pytorch as ipex
+# import intel_extension_for_pytorch as ipex
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 from huggingface_hub import login
@@ -586,12 +586,22 @@ elif option == "SWP Calculator":
         )
 
 
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+import torch
+from enum import Enum
+import logging
+from datetime import datetime
+import os
+import sys
+import gc
+import streamlit as st
+from dataclasses import dataclass
+from typing import Optional, Dict
+import re
+
 class BackendType(Enum):
     CUDA = "cuda"
-    MPS = "mps"
     CPU = "cpu"
-    ROCM = "rocm"
-    IPEX = "ipex"
 
 @dataclass
 class BackendConfig:
@@ -600,18 +610,39 @@ class BackendConfig:
     max_memory: Optional[float] = None
     device_name: Optional[str] = None
 
-class MultiBackendLlama:
+class OptimizedChatbot:
     def __init__(self):
         self.logger = self._setup_logging()
         self.backend = self._detect_backend()
         self.logger.info(f"Initialized with backend: {self.backend.device_type.value}")
         self._initialize_model()
 
-    
+    def _setup_logging(self):
+        if not os.path.exists('logs'):
+            os.makedirs('logs')
+
+        logger = logging.getLogger('OptimizedChatbot')
+        logger.setLevel(logging.DEBUG)
+
+        log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        file_handler = logging.FileHandler(log_filename)
+        file_handler.setLevel(logging.DEBUG)
+        
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        if not logger.handlers:
+            logger.addHandler(file_handler)
+            logger.addHandler(console_handler)
+        
+        return logger
+
     def _detect_backend(self) -> BackendConfig:
-        """Detect and configure the best available backend"""
         try:
-            # Check CUDA
             if torch.cuda.is_available():
                 device_name = torch.cuda.get_device_name(0)
                 max_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
@@ -621,31 +652,12 @@ class MultiBackendLlama:
                     max_memory=max_memory,
                     device_name=device_name
                 )
-            
-            # Check MPS (Apple Silicon)
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                return BackendConfig(
-                    device_type=BackendType.MPS,
-                    quantization_supported=False,
-                    device_name="Apple Silicon"
-                )
-            
-            # Check for IPEX (Intel)
-            elif os.environ.get('INTEL_EXTENSION_FOR_PYTORCH', False):
-                return BackendConfig(
-                    device_type=BackendType.IPEX,
-                    quantization_supported=True,
-                    device_name="Intel CPU/GPU"
-                )
-            
-            # Fallback to CPU
             else:
                 return BackendConfig(
                     device_type=BackendType.CPU,
                     quantization_supported=False,
                     device_name="CPU"
                 )
-                
         except Exception as e:
             self.logger.warning(f"Error detecting backend: {str(e)}. Falling back to CPU.")
             return BackendConfig(
@@ -654,410 +666,180 @@ class MultiBackendLlama:
                 device_name="CPU"
             )
 
-    def _get_device_map(self):
-        """Generate appropriate device map based on backend"""
-        if self.backend.device_type == BackendType.CUDA:
-            return {
-                'model.embed_tokens': 'cpu',
-                'model.norm': 'cpu',
-                'lm_head': 'cpu',
-                'model.layers.0': 'cuda:0',
-                'model.layers.1': 'cuda:0',
-                'model.layers.2': 'cuda:0',
-                'model.layers.3': 'cpu',
-                'model.layers.4': 'cpu',
-                'model.layers.5': 'cpu'
-            }
-        return "auto"
-
-    def _get_quantization_config(self):
-        """Get quantization configuration based on backend support"""
-        if not self.backend.quantization_supported:
-            return None
-            
-        return BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True
-        )
-
     def _initialize_model(self):
-        """Initialize the model with backend-specific configurations"""
         try:
-            self.model_name = "meta-llama/Llama-2-7b-chat-hf"
+            self.model_name = "mistralai/Mistral-7B-Instruct-v0.1"
             
             # Initialize tokenizer
             self.logger.info("Loading tokenizer...")
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name,
-                model_max_length=256
-            )
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.tokenizer.pad_token = self.tokenizer.eos_token
             
-            # Prepare model configuration
+            # Configure model loading settings
+            if self.backend.device_type == BackendType.CUDA:
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                    llm_int8_enable_fp32_cpu_offload=True
+                )
+                
+                # Calculate available GPU memory
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                max_memory = {
+                    0: f"{max(4, min(int(gpu_memory * 0.8), 10))}GiB",
+                    "cpu": "16GiB"
+                }
+            else:
+                quantization_config = None
+                max_memory = None
+
+            # Model loading configuration
             model_kwargs = {
-                "torch_dtype": torch.float16 if self.backend.device_type != BackendType.CPU else torch.float32,
-                "device_map": self._get_device_map(),
-                "offload_folder": "offload_folder",
-                "offload_state_dict": True,
+                "device_map": "auto",
+                "max_memory": max_memory,
+                "torch_dtype": torch.float16 if self.backend.device_type == BackendType.CUDA else torch.float32,
                 "low_cpu_mem_usage": True
             }
             
-            # Add quantization if supported
-            quant_config = self._get_quantization_config()
-            if quant_config:
-                model_kwargs["quantization_config"] = quant_config
-            
-            # Load model
+            if quantization_config:
+                model_kwargs["quantization_config"] = quantization_config
+
+            # Load model with fallback handling
             self.logger.info(f"Loading model with {self.backend.device_type.value} backend...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                **model_kwargs
-            )
-            
-            # Backend-specific optimizations
-            self._apply_backend_optimizations()
-            
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    **model_kwargs
+                )
+                
+                # Ensure model is on the correct device
+                if self.backend.device_type == BackendType.CUDA:
+                    self.model = self.model.to("cuda")
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    self.logger.warning("GPU OOM, falling back to CPU...")
+                    self.backend = BackendConfig(
+                        device_type=BackendType.CPU,
+                        quantization_supported=False,
+                        device_name="CPU"
+                    )
+                    model_kwargs = {
+                        "device_map": "cpu",
+                        "torch_dtype": torch.float32,
+                        "low_cpu_mem_usage": True
+                    }
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        self.model_name,
+                        **model_kwargs
+                    )
+                else:
+                    raise
+
+            self.model.eval()
+            if self.backend.device_type == BackendType.CUDA:
+                torch.cuda.empty_cache()
+                
         except Exception as e:
             self.logger.error(f"Error initializing model: {str(e)}")
             raise
 
-    def _apply_backend_optimizations(self):
-        """Apply backend-specific optimizations"""
-        self.model.eval()
-        
-        if self.backend.device_type == BackendType.CUDA:
-            torch.cuda.empty_cache()
-            torch.backends.cudnn.benchmark = True
-        elif self.backend.device_type == BackendType.IPEX:
-            # import intel_extension_for_pytorch as ipex
-            self.model = ipex.optimize(self.model)
-
-    def __call__(self, inputs: Dict[str, str]) -> Dict[str, str]:
+    def generate_response(self, user_input: str) -> str:
         try:
-            self.logger.info("Starting inference...")
-            
-            prompt = f"""<s>[INST] You are a helpful investment advisor chatbot. 
-            Please answer the following question:
-            {inputs['input']} [/INST]"""
-            
-            # Memory cleanup
             if self.backend.device_type == BackendType.CUDA:
                 torch.cuda.empty_cache()
                 gc.collect()
-            
-            # Tokenize
+
+            prompt = f"""<s>[INST] You are a helpful investment advisor chatbot. 
+            Please provide clear and concise advice for the following question:
+            {user_input} [/INST]"""
+
             inputs = self.tokenizer(
                 prompt,
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=128
+                max_length=512
             )
-            
-            # Move inputs to appropriate device
-            device = self.backend.device_type.value
-            if device == "cuda":
-                inputs = {k: v.to('cuda:0') if k == 'input_ids' else v.to('cpu') 
-                         for k, v in inputs.items()}
-            else:
-                inputs = {k: v.to(device) for k, v in inputs.items()}
-            
-            # Generate response
-            outputs = self.model.generate(
-                inputs['input_ids'],
-                max_new_tokens=64,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id,
-                num_beams=1,
-                no_repeat_ngram_size=3,
-                early_stopping=True,
-                use_cache=True
-            )
-            
+
+            if self.backend.device_type == BackendType.CUDA:
+                inputs = {k: v.cuda() for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    inputs['input_ids'],
+                    attention_mask=inputs['attention_mask'],
+                    max_new_tokens=256,
+                    temperature=0.7,
+                    do_sample=True,
+                    top_p=0.95,
+                    top_k=50,
+                    num_beams=1,
+                    no_repeat_ngram_size=3,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id
+                )
+
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             response = response.split("[/INST]")[-1].strip()
-            
-            return {"output": response}
-            
+
+            return self._clean_response(response)
+
         except Exception as e:
             self.logger.error(f"Error during inference: {str(e)}")
-            return {"output": f"I apologize, but I encountered an error: {str(e)}"}
+            return f"I apologize, but I encountered an error: {str(e)}"
 
-    def __del__(self):
-        """Cleanup resources"""
-        self.logger.info("Cleaning up resources...")
-        if self.backend.device_type == BackendType.CUDA:
-            torch.cuda.empty_cache()
-        gc.collect()
-
-# Setup logging function remains the same
-def setup_logging():
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
-
-    logger = logging.getLogger('ChatbotLogger')
-    logger.setLevel(logging.DEBUG)
-
-    log_filename = f'logs/chatbot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-    file_handler = logging.FileHandler(log_filename)
-    file_handler.setLevel(logging.DEBUG)
-    
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    if not logger.handlers:
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
-    
-    return logger
-
-logger = setup_logging()
-
-class LLMChatbot:
-    def __init__(self, model_name="facebook/opt-1.3b"):  # Using a smaller model that works on CPU
-        """Initialize the chatbot with CPU support."""
-        try:
-            st.info("Starting model initialization... This may take a few minutes.")
-            logger.info(f"Starting initialization of {model_name}")
-            
-            # Step 1: Login to Hugging Face
-            st.text("Authenticating with Hugging Face...")
-            login(token="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")
-            logger.info("Hugging Face authentication successful")
-            
-            # Step 2: Load tokenizer
-            st.text("Loading tokenizer...")
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                use_auth_token=True,
-                cache_dir="./model_cache"
-            )
-            logger.info("Tokenizer loaded successfully")
-            
-            # Step 3: Load model without CUDA-specific configurations
-            st.text("Loading model... This may take several minutes...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                use_auth_token=True,
-                low_cpu_mem_usage=True,
-                cache_dir="./model_cache"
-            )
-            
-            logger.info("Model loaded successfully")
-            
-            # Step 4: Setup configurations
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-            self.system_prompt = """<s>[INST] You are a clear and concise financial advisor. 
-            When answering questions, follow these guidelines:
-            
-            1. Keep responses under 250 words
-            2. Use simple, clear language
-            3. Structure answers with:
-               - Brief definition
-               - Key benefits
-               - Important considerations
-            4. Focus on practical, actionable information
-            
-            Current question: {user_input} [/INST]"""
-            
-            self.device = "cpu"
-            st.success(f"Model initialized successfully on CPU")
-            logger.info("Full initialization complete on CPU")
-            
-        except Exception as e:
-            logger.error(f"Error in initialization: {str(e)}", exc_info=True)
-            st.error(f"Initialization Error: {str(e)}")
-            raise
-
-    def generate_response(self, user_input, max_new_tokens=150):
-        """Generate a response using CPU."""
-        try:
-            # Format prompt
-            full_prompt = self.system_prompt.format(user_input=user_input)
-            
-            # Tokenize input
-            inputs = self.tokenizer(
-                full_prompt,
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-                max_length=512,
-                add_special_tokens=True,
-                return_attention_mask=True
-            )
-            
-            # Generate response with CPU-friendly parameters
-            outputs = self.model.generate(
-                input_ids=inputs.input_ids,
-                attention_mask=inputs.attention_mask,
-                max_new_tokens=max_new_tokens,
-                num_return_sequences=1,
-                pad_token_id=self.tokenizer.pad_token_id,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                no_repeat_ngram_size=3
-            )
-            
-            response = self.tokenizer.decode(
-                outputs[0][inputs.input_ids.shape[1]:],
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True
-            )
-            
-            return response.strip()
-            
-        except Exception as e:
-            logger.error(f"Error generating response: {str(e)}")
-            return "I apologize, but I encountered an error. Please try asking your question again."
-    
-    def _clean_response(self, response):
+    def _clean_response(self, response: str) -> str:
         """Clean and format the response."""
-        # Remove Llama instruction tokens and format markers
         response = re.sub(r'\[/INST\]|\[INST\]', '', response)
         response = re.sub(r'<s>|</s>', '', response)
-        
-        # Remove multiple newlines and spaces
         response = re.sub(r'\n\s*\n', '\n\n', response)
-        
-        # Ensure response doesn't exceed 250 words
         words = response.split()
         if len(words) > 250:
             response = ' '.join(words[:250]) + '...'
-        
         return response.strip()
-    
-    def _is_finance_related(self, response):
-        """Check if the response is related to finance and investments."""
-        finance_keywords = [
-            'invest', 'finance', 'money', 'market', 'stock', 'bond', 'sip', 'swp',
-            'portfolio', 'return', 'risk', 'fund', 'equity', 'debt', 'asset',
-            'dividend', 'interest', 'capital', 'wealth', 'financial'
-        ]
-        
-        response_lower = response.lower()
-        return any(keyword in response_lower for keyword in finance_keywords)
 
-# The rest of the code (initialize_chatbot and run_chatbot_section) remains the same
-def initialize_chatbot():
-    """Initialize the CPU-based chatbot."""
+@st.cache_resource(show_spinner=False)
+def get_chatbot():
+    return OptimizedChatbot()
+
+def run_chatbot():
+    st.title("💰 Investment Advisor Chatbot")
+    st.write("Ask me anything about investments, financial planning, or market strategies!")
+
     try:
-        # Create cache directory if it doesn't exist
-        os.makedirs("./model_cache", exist_ok=True)
-        
-        # Display initialization progress
-        with st.spinner("Initializing CPU-based chatbot..."):
-            st.info("Running on CPU - responses may be slower but still functional")
-            
-            # Initialize chatbot
-            chatbot = LLMChatbot()
-            return chatbot
-            
-    except Exception as e:
-        logger.error(f"Chatbot initialization failed: {str(e)}", exc_info=True)
-        st.error(f"""
-        Failed to initialize chatbot. Error: {str(e)}
-        
-        Troubleshooting steps:
-        1. Check your internet connection
-        2. Verify your Hugging Face token is valid
-        3. Ensure you have enough RAM (at least 8GB recommended)
-        4. Try clearing your browser cache and refreshing
-        """)
-        return None
-    
-def run_chatbot_section():
-    st.header("💬 Investment & Finance Chatbot")
-    st.write("Ask me about investments, SIP, SWP, and financial planning!")
+        chatbot = get_chatbot()
 
-    if os.path.exists('logs'):
-        log_files = [f for f in os.listdir('logs') if f.endswith('.log')]
-        if log_files:
-            latest_log = max(log_files, key=lambda x: os.path.getctime(os.path.join('logs', x)))
-            st.info(f"Debug logs are being written to: logs/{latest_log}")
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
 
-    @st.cache_resource
-    def get_chatbot():
-        return initialize_chatbot()
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
-    chatbot = get_chatbot()
+        if prompt := st.chat_input("Ask your investment question..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-    # Initialize chat history if not exists
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-    
-    # Initialize message keys if not exists
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Display chat history
-    chat_container = st.container()
-    with chat_container:
-        for message in st.session_state.chat_history:
-            st.markdown(
-                f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-family: monospace;'>
-                    <b>You:</b> {message['question']}
-                </div>""",
-                unsafe_allow_html=True
-            )
-            st.markdown(
-                f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace;'>
-                    <b>Bot:</b> {message['answer']}
-                </div>""",
-                unsafe_allow_html=True
-            )
-
-    # Get user input
-    if prompt := st.chat_input("Ask about investments, SIP, SWP, or financial planning..."):
-        if chatbot:
-            try:
-                logger.info(f"Processing user query: {prompt}")
-                
-                # Add user message to chat history
-                st.markdown(
-                    f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-family: monospace;'>
-                        <b>You:</b> {prompt}
-                    </div>""",
-                    unsafe_allow_html=True
-                )
-
-                # Generate response with spinner
+            with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
-                    response = chatbot.generate_response(prompt)
-                    formatted_response = response.replace("\n", "\n\n")
+                    try:
+                        response = chatbot.generate_response(prompt)
+                        st.markdown(response)
+                        st.session_state.messages.append({"role": "assistant", "content": response})
+                    except Exception as e:
+                        st.error(f"Failed to generate response: {str(e)}")
+                        st.session_state.messages.append({"role": "assistant", "content": "I apologize, but I encountered an error. Please try again."})
 
-                # Display bot response
-                st.markdown(
-                    f"""<div style='background-color: #000000; color: #00FF00; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace;'>
-                        <b>Bot:</b> {formatted_response}
-                    </div>""",
-                    unsafe_allow_html=True
-                )
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        st.info("Please try refreshing the page or check the logs for more details.")
 
-                # Update chat history
-                st.session_state.chat_history.append({
-                    "question": prompt,
-                    "answer": formatted_response
-                })
-
-                logger.info("Response generated and chat history updated")
-
-            except Exception as e:
-                logger.error(f"Error during chat interaction: {str(e)}", exc_info=True)
-                st.error(f"An error occurred: {str(e)}")
-        else:
-            logger.error("Chatbot is not initialized")
-            st.error("Chatbot initialization failed. Check logs for details.")
+@st.cache_resource(show_spinner=False)
+def get_chatbot():
+    return OptimizedChatbot()
 
 if __name__ == "__main__":
-    run_chatbot_section()
+    run_chatbot()
